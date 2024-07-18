@@ -4,7 +4,7 @@ import aiohttp
 from urllib.parse import urlparse
 from random import choice
 from pathlib import Path
-from time import datetime
+from datetime import datetime
 from nonebot.params import CommandArg
 from nonebot import get_plugin_config
 from nonebot.plugin import PluginMetadata
