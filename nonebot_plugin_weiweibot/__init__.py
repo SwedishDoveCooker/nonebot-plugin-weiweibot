@@ -10,17 +10,16 @@ from nonebot import get_plugin_config
 from nonebot.plugin import PluginMetadata
 from nonebot.permission import SUPERUSER
 from nonebot import logger
+from nonebot import on_command
 from nonebot.adapters import Bot
 from nonebot.adapters import Event
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import MessageSegment
-from tf_idf import *
-from simple_search import *
-from image_r3cognition import *
 
-
+from .tf_idf import *
+from .simple_search import *
+from .image_r3cognition import *
 from .config import Config
-from nonebot import on_command
 
 BLACKLIST=[]
 
