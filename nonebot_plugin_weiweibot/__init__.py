@@ -52,7 +52,6 @@ async def handle_message_helper(bot: Bot, event: Event) -> None:
                 else:
                     logger.error(f"Failed to fetch username for UID {uid}, status code: {response.status}")
     except Exception as e:
-        logger.opt(exception=True).error("ZeroDivisionError")
         logger.error(f"Error fetching username for UID {uid}: {e}")
 
     if not username:
