@@ -1,15 +1,15 @@
-import os
 from .data import extract_name
 from random import choice
+from pathlib import Path
 
 name = []
 ex_name = []
 very_ex_name=[]
-for filename in os.listdir("./assets"):
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
-        name.append(filename)
-        ex_name.append(extract_name(filename, mod=0))
-        very_ex_name.append(extract_name(filename))
+for filename in Path("./assets").iterdir():
+    if filename.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
+        name.append(filename.name)
+        ex_name.append(extract_name(filename.name, mod=0))
+        very_ex_name.append(extract_name(filename.name))
 
 def simple_search(key_words, mod):
     results = []
@@ -26,4 +26,7 @@ def simple_search(key_words, mod):
 
 def very_ex_name_handler():
     return very_ex_name
+
+def name_handler():
+    return name
     

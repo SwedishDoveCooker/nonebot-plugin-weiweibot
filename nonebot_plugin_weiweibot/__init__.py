@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from random import choice
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from nonebot.params import CommandArg
 from nonebot import get_plugin_config
 from nonebot.plugin import PluginMetadata
@@ -16,12 +17,27 @@ from nonebot.adapters import Event
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import MessageSegment
 
-from .tf_idf import *
-from .simple_search import *
-from .image_r3cognition import *
+from .tf_idf import compute_idf, rank_documents
+from .simple_search import simple_search, very_ex_name_handler, name_handler
+from .image_r3cognition import rename_images, process_images
 from .config import Config
 
 BLACKLIST=[]
+
+__plugin_meta__ = PluginMetadata(
+    name="vv_helper",
+    description="A helper plugin for weiwei lovers.",
+    usage="This plugin provides various commands for image searching and uploading as well as managing.",
+
+    type="application",
+
+    homepage="https://github.com/SwedishDoveCooker/nonebot-plugin-weiweibot",
+    
+    config=Config,
+
+    supported_adapters={"~onebot.v11"},
+)
+
 
 async def limit_permission(event: Event):
     uid = event.get_user_id()
@@ -41,7 +57,7 @@ helper = on_command(
 @helper.handle()
 async def handle_message_helper(bot: Bot, event: Event) -> None:
     uid: str = event.get_user_id()
-    username: str = None
+    username: Optional[str] = None
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(f"https://api.usuuu.com/qq/{uid}") as response:
@@ -155,7 +171,7 @@ async def handle_message_dl(args: Message = CommandArg()):
         elif int(location)==len(result)+1:
             await d.finish("已退出")
         else:
-            await d,finish("out of range")
+            await d.finish("out of range")
     await d.reject("仍在30秒会话期内, 请按照规范输入或者选择相应数字退出")
 
 
@@ -223,6 +239,7 @@ fuzzy_search = on_command(
 )
 
 very_ex_name=very_ex_name_handler()
+name=name_handler()
 idf = compute_idf(very_ex_name)
 @fuzzy_search.handle()
 async def handle_message_fuzzy_search(bot: Bot, event: Event) -> None:
@@ -232,9 +249,7 @@ async def handle_message_fuzzy_search(bot: Bot, event: Event) -> None:
         top_index, top_score = ranked_results[0]
     logger.info(f"/f : query:{message}, result:{name[top_index]}")
     await fuzzy_search.send(f"最高权重: {top_score}")
-    await fuzzy_search.finish(MessageSegment.image(Path(__file__).parent / "assets" / "uploads" / (name
-        
-    )[top_index]))
+    await fuzzy_search.finish(MessageSegment.image(Path(__file__).parent / "assets" / "uploads" / name[top_index]))
 
 
 image_recognition = on_command(
@@ -291,20 +306,5 @@ async def handle_message_remove(args: Message = CommandArg()):
         BLACKLIST.remove(uid)
         logger.info(f"User {uid} removed from blacklist")
         await remove.finish("User removed from blacklist")
-
-
-__plugin_meta__ = PluginMetadata(
-    name="vv_helper",
-    description="A helper plugin for weiwei lovers.",
-    usage="This plugin provides various commands for image searching and uploading as well as managing.",
-
-    type="application",
-
-    homepage="https://github.com/SwedishDoveCooker/nonebot-plugin-weiweibot",
-    
-    config=Config,
-
-    supported_adapters={"~onebot.v11"},
-)
 
 config = get_plugin_config(Config)
