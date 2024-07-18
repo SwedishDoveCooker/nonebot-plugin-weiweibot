@@ -1,5 +1,5 @@
 import os
-from data import extract_name
+from .data import extract_name
 from random import choice
 
 name = []
