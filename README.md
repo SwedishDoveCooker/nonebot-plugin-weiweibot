@@ -8,7 +8,7 @@
 
 # nonebot-plugin-weiweibot
 
-_✨ 一个快速查找维为老师语录的机器人🤓👆 ✨_
+_✨ 维维豆奶欢乐开怀😋 ✨_
 
 
 <a href="./LICENSE">
@@ -21,21 +21,9 @@ _✨ 一个快速查找维为老师语录的机器人🤓👆 ✨_
 
 </div>
 
-这是一个 nonebot2 插件项目的模板库, 你可以直接使用本模板创建你的 nonebot2 插件项目的仓库
-
-<details>
-<summary>模板库使用方法</summary>
-
-1. 点击仓库中的 "Use this template" 按钮, 输入仓库名与描述, 点击 "  Create repository from template" 创建仓库
-2. 在创建好的新仓库中, 在 "Add file" 菜单中选择 "Create new file", 在新文件名处输入`LICENSE`, 此时在右侧会出现一个 "Choose a license template" 按钮, 点击此按钮选择开源协议模板, 然后在最下方提交新文件到主分支
-3. 全局替换`SwedishDoveCooker`为仓库所有者ID; 全局替换`nonebot-plugin-weiweibot`为插件名; 全局替换`nonebot_plugin_weiweibot`为包名; 修改 python 徽标中的版本为你插件的运行所需版本
-4. 修改 README 中的插件名和插件描述, 并在下方填充相应的内容
-
-</details>
-
 ## 📖 介绍
 
-这里是插件的详细介绍部分
+一个快速查找维维老师语录的机器人
 
 ## 💿 安装
 
