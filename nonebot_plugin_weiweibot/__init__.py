@@ -23,6 +23,7 @@ from .image_r3cognition import rename_images, process_images
 from .config import Config
 
 BLACKLIST=[]
+__dir = Path(__file__).parent
 
 __plugin_meta__ = PluginMetadata(
     name="vv_helper",
@@ -264,7 +265,7 @@ async def handle_image_recognition(bot: Bot, event: Event):
     await image_recognition.send("starting task")
     current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     log_file = f"{current_time}.txt"
-    folder_path = 'assets/uploads'
+    folder_path = __dir.joinpath("assets", "uploads")
     rename_images(folder_path, log_file)
     process_images(folder_path, log_file)
     await image_recognition.finish("done")

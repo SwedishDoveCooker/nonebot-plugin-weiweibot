@@ -5,7 +5,8 @@ from pathlib import Path
 name = []
 ex_name = []
 very_ex_name=[]
-for filename in Path("./assets").iterdir():
+__dir = Path(__file__).parent
+for filename in __dir.joinpath("assets").iterdir():
     if filename.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
         name.append(filename.name)
         ex_name.append(extract_name(filename.name, mod=0))
