@@ -1,5 +1,5 @@
-from pydantic import BaseModel
+from datetime import timedelta
+from pydantic import BaseModel, Field
 
-class Config(BaseModel):
-    """Plugin Config Here"""
-    SESSION_EXPIRE_TIMEOUT = "PT30S"
+class MyModel(BaseModel):
+    SESSION_EXPIRE_TIMEOUT: timedelta = Field(default=timedelta(seconds=30))
