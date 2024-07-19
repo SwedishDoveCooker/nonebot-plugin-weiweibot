@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-weiweibot"
-version = "0.1.15"
+version = "0.1.17"
 description = "a simple weiwei bot"
 authors = [
     {name = "J4ckacc", email = "aaaskyfullofstars@gmail.com"}
