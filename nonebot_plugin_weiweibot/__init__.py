@@ -4,10 +4,9 @@ import aiohttp
 from urllib.parse import urlparse
 from random import choice
 from pathlib import Path
-from datetime import datetime
 from typing import Optional
+from nonebot.rule import is_type
 from nonebot.params import CommandArg
-from nonebot import get_plugin_config
 from nonebot.plugin import PluginMetadata
 from nonebot.permission import SUPERUSER
 from nonebot import logger
@@ -16,11 +15,11 @@ from nonebot.adapters import Bot
 from nonebot.adapters import Event
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import MessageSegment
+from nonebot.adapters.onebot.v11 import PrivateMessageEvent, GroupMessageEvent
 
 from .tf_idf import compute_idf, rank_documents
 from .simple_search import simple_search, very_ex_name_handler, name_handler
 from .image_r3cognition import rename_images, process_images
-from .config import Config
 
 BLACKLIST=[]
 __dir = Path(__file__).parent
@@ -34,7 +33,6 @@ __plugin_meta__ = PluginMetadata(
 
     homepage="https://github.com/SwedishDoveCooker/nonebot-plugin-weiweibot",
     
-    config=Config,
 
     supported_adapters={"~onebot.v11"},
 )
@@ -52,6 +50,7 @@ helper = on_command(
     "help",
     priority=11,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=limit_permission
 )
 
@@ -102,6 +101,7 @@ vv = on_command(
     "vv",
     priority=100,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=limit_permission
 )
 @vv.handle()
@@ -124,6 +124,7 @@ r = on_command(
     aliases={"每日一签", "打卡"},
     priority=102,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=limit_permission
 )
 
@@ -139,6 +140,7 @@ d = on_command(
     aliases={"精确搜索", "精确"},
     priority=101,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=limit_permission
 )
 
@@ -180,6 +182,7 @@ uploader = on_command(
     "upload",
     aliases={"上传"},
     priority=98,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     block=True,
 )
 
@@ -236,6 +239,7 @@ fuzzy_search = on_command(
     aliases={"模糊搜索", "模糊"},
     priority=99,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=limit_permission
 )
 
@@ -257,17 +261,16 @@ image_recognition = on_command(
     "image_recognition",
     priority=10,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=SUPERUSER
 )
 
 @image_recognition.handle()
 async def handle_image_recognition(bot: Bot, event: Event):
     await image_recognition.send("starting task")
-    current_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    log_file = f"{current_time}.txt"
     folder_path = __dir.joinpath("assets", "uploads")
-    rename_images(folder_path, log_file)
-    process_images(folder_path, log_file)
+    rename_images(folder_path)
+    process_images(folder_path)
     await image_recognition.finish("done")
 
 
@@ -275,6 +278,7 @@ add = on_command(
     "add",
     priority=103,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=SUPERUSER
 )
 
@@ -294,6 +298,7 @@ remove = on_command(
     "remove",
     priority=104,
     block=True,
+    rule = is_type(PrivateMessageEvent, GroupMessageEvent),
     permission=SUPERUSER
 )
 
@@ -308,4 +313,3 @@ async def handle_message_remove(args: Message = CommandArg()):
         logger.info(f"User {uid} removed from blacklist")
         await remove.finish("User removed from blacklist")
 
-config = get_plugin_config(Config)

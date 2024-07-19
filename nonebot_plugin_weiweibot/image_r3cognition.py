@@ -3,6 +3,7 @@ import cv2
 import hashlib
 from cnocr import CnOcr
 from pathlib import Path
+from nonebot import logger
 
 def clean_filename(filename):
     return re.sub(r'[^\u4e00-\u9fa5a-zA-Z ]', '', filename)
@@ -23,8 +24,8 @@ def get_file_md5(file_path):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
-def rename_images(folder_path, log_file):
-    valid_extensions = ('.jpg', '.png', '.webp', '.jpeg', '.gif', '.JPG', '.PNG', '.WEBP', '.JPEG', '.GIF')
+def rename_images(folder_path):
+    valid_extensions = ('.jpg', '.png', '.webp', '.jpeg', '.JPG', '.PNG', '.WEBP', '.JPEG')
     files = folder_path.iterdir()
     image_files = [f for f in files if f.suffix.lower() in valid_extensions]
     
@@ -36,13 +37,12 @@ def rename_images(folder_path, log_file):
         new_file_path = folder_path.joinpath(new_filename)
         if not new_file_path.exists():
             old_file_path.rename(new_file_path)
-            with open(log_file, 'a', encoding='utf-8') as log:
-                log.write(f"Renamed: {file} -> {new_filename}\n")
+            logger.info(f"Renamed: {file} -> {new_filename}\n")
 
-def process_images(folder_path, log_file):
+def process_images(folder_path):
     files = folder_path.iterdir()
     ocr = CnOcr()
-    valid_extensions = ('.jpg', '.png', '.webp', '.jpeg', '.gif', '.JPG', '.PNG', '.WEBP', '.JPEG', '.GIF')
+    valid_extensions = ('.jpg', '.png', '.webp', '.jpeg', '.JPG', '.PNG', '.WEBP', '.JPEG')
     image_files = [f for f in files if f.suffix.lower() in valid_extensions]
     for f in image_files:
         img_fp = folder_path.joinpath(f)
@@ -66,6 +66,5 @@ def process_images(folder_path, log_file):
         new_file_path = folder_path.joinpath(f"{cleaned_filename}{img_fp.suffix}")
         if not new_file_path.exists():
             img_fp.rename(new_file_path)
-            with open(log_file, 'a', encoding='utf-8') as log:
-                log.write(f"Renamed: {f} -> {cleaned_filename}{img_fp.suffix}\n")
+            logger.info(f"Renamed: {f} -> {cleaned_filename}{img_fp.suffix}\n")
         temp_cropped_img_path.unlink()
