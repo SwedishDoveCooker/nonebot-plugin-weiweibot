@@ -27,5 +27,5 @@ adapters = [
     {name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11"}
 ]
 plugins = [
-    "nonebot-plugin-weiweibot"
+    "nonebot_plugin_weiweibot"
 ]
