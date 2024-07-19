@@ -250,7 +250,7 @@ async def handle_message_fuzzy_search(bot: Bot, event: Event) -> None:
         top_index, top_score = ranked_results[0]
     logger.info(f"/f : query:{message}, result:{name[top_index]}")
     await fuzzy_search.send(f"最高权重: {top_score}")
-    await fuzzy_search.finish(MessageSegment.image(Path(__file__).parent / "assets" / "uploads" / name[top_index]))
+    await fuzzy_search.finish(MessageSegment.image(Path(__file__).parent / "assets" / name[top_index]))
 
 
 image_recognition = on_command(
