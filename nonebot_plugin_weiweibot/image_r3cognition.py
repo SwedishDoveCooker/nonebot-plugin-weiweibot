@@ -42,14 +42,15 @@ def rename_images(folder_path, log_file):
 def process_images(folder_path, log_file):
     files = folder_path.iterdir()
     ocr = CnOcr()
-    
-    for f in files:
+    valid_extensions = ('.jpg', '.png', '.webp', '.jpeg', '.gif', '.JPG', '.PNG', '.WEBP', '.JPEG', '.GIF')
+    image_files = [f for f in files if f.suffix.lower() in valid_extensions]
+    for f in image_files:
         img_fp = folder_path.joinpath(f)
         img = cv2.imread(str(img_fp))
         height, width = img.shape[:2]
         start_y = int(height * 4 // 5)
         cropped_img = img[start_y:, :]
-        temp_cropped_img_path = folder_path.joinpath('temp_cropped_img.png')
+        temp_cropped_img_path = folder_path.joinpath('temp_cropped_img'+img_fp.suffix)
         cv2.imwrite(str(temp_cropped_img_path), cropped_img)
         ocr_results = ocr.ocr(str(temp_cropped_img_path))
         filtered_results = []
@@ -67,3 +68,4 @@ def process_images(folder_path, log_file):
             img_fp.rename(new_file_path)
             with open(log_file, 'a', encoding='utf-8') as log:
                 log.write(f"Renamed: {f} -> {cleaned_filename}{img_fp.suffix}\n")
+        temp_cropped_img_path.unlink()
