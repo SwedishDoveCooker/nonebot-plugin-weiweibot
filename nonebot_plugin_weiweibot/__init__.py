@@ -11,10 +11,12 @@ from nonebot.plugin import PluginMetadata
 from nonebot.permission import SUPERUSER
 from nonebot import logger
 from nonebot import on_command
-from nonebot.adapters import Bot
-from nonebot.adapters import Event
-from nonebot.adapters import Message
-from nonebot.adapters.onebot.v11 import MessageSegment
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    Event,
+    Message,
+    MessageSegment
+)
 from nonebot.adapters.onebot.v11 import PrivateMessageEvent, GroupMessageEvent
 
 from .tf_idf import compute_idf, rank_documents
@@ -221,8 +223,8 @@ async def handle_message_uploader(args: Message = CommandArg()):
             r, extension = await fetch(session, URL)
             if r:
                 full_filename = f"{name}{extension}"
-                print(full_filename)
-                with open("assets/uploads/" + full_filename, 'wb') as f:
+                folder_path = __dir.joinpath("assets", "uploads", full_filename)
+                with open(folder_path, 'wb') as f:
                     f.write(r)
                 logger.info(f"Image saved: {full_filename} from URL: {URL}")
                 await uploader.finish("saved")
