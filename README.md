@@ -18,7 +18,7 @@ _✨ 维维豆奶欢乐开怀😋 ✨_
     <img src="https://img.shields.io/pypi/v/nonebot-plugin-weiweibot.svg" alt="pypi">
 </a>
 <img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="python">
-<img src="https://img.shields.io/pypi/dm/nonebot-plugin-weiweibot?logo=pypi&label=Downloads" alt="downloads">
+<img src="https://img.shields.io/pypi/dm/requests?logo=pypi&label=Downloads" alt="downloads">
 
 </div>
 
