@@ -95,7 +95,8 @@ _✨ 维维豆奶欢乐开怀😋 ✨_
 |      /remove       |     管理员     |  否   |                  将群友移出黑名单                  |
 
 <p>通过pip安装得到的插件不含图片,你可以在本仓库的 assets_sample 里下载样例图片 ( 约880张 ) 
-<p>我注意到项目使用的图像识别库可能会造成服务器死机,若您出现类似状况,请前往/nonebot_plugin_weiweibot/__init__.py下注释掉以下代码:
+<p>如遇困难可以通过mega下载整个压缩包 https://mega.nz/file/nGp3RJqI#cXVv5yJ1FVxTXxr-4W6I4j107J9hFwn6qphMKoLPxcg
+<p>注意项目使用的图像识别库可能会造成服务器死机,若您出现类似状况,请前往/nonebot_plugin_weiweibot/__init__.py下注释掉以下代码:
 <p>`from .image_r3cognition import rename_images, process_images`
 <p>这也会使/image_recognition命令失效
 
