@@ -201,6 +201,7 @@ async def fetch(session, url):
             return await response.read(), extension
     except aiohttp.ClientError as e:
         print(f"Request failed: {e}")
+        return None, None
 
 def is_valid_domain(url):
     parsed_url = urlparse(url)
