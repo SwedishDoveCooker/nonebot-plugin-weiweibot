@@ -203,7 +203,6 @@ async def fetch(session, url):
         print(f"Request failed: {e}")
         return None, None
 
-
 def is_valid_domain(url):
     parsed_url = urlparse(url)
     domain = parsed_url.netloc
