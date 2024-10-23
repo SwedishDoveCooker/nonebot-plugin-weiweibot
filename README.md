@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD033 MD036 MD041 MD045 -->
 <div align="center">
   <a href="https://v2.nonebot.dev/store">
     <img src="./docs/NoneBotPlugin.svg" width="300" alt="logo">
