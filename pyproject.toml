@@ -1,10 +1,10 @@
 [project]
 name = "nonebot-plugin-weiweibot"
-version = "0.2.1"
+version = "0.2.2"
 description = "a simple weiwei bot"
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "Alesso", email = "intro@j4cka.cc" }]
+authors = [{ name = "Alesso", email = "intro@j4cka.cc" },{name="Divinity",email="1342602392@qq.com"}]
 dependencies = [
     "nonebot2>=2.2.0",
     "nonebot-adapter-onebot>=2.1.3",
