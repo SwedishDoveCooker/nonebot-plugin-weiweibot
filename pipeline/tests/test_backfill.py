@@ -54,6 +54,39 @@ def test_bot_check_stops_downloads_but_queued_work_finishes(fakes):
     assert done == [4, 3]  # what was already downloaded still got indexed
 
 
+def test_bot_check_is_waited_out_and_the_same_episode_retried(fakes, monkeypatch):
+    done, calls, tmp = fakes
+    state = {"blocked": 2}
+    real = fetch.download
+
+    def flaky(vid, dest, cookies=None, rate=None, browser_profile=None):
+        if state["blocked"] > 0:
+            state["blocked"] -= 1
+            calls.append("blocked")
+            raise fetch.BotCheckError("sign in")
+        return real(vid, dest, cookies, rate, browser_profile)
+
+    monkeypatch.setattr(fetch, "download", flaky)
+    code = _run(tmp, [2, 1], {2: "b", 1: "a"}, botcheck_wait_min=0.0005, botcheck_retries=5)
+    assert code == 0
+    assert calls[:3] == ["blocked", "blocked", "b"]  # episode 2 retried, not skipped
+    assert done == [2, 1]
+
+
+def test_gives_up_after_the_retry_budget(fakes, monkeypatch):
+    done, calls, tmp = fakes
+
+    def always_blocked(vid, dest, cookies=None, rate=None, browser_profile=None):
+        calls.append(vid)
+        raise fetch.BotCheckError("sign in")
+
+    monkeypatch.setattr(fetch, "download", always_blocked)
+    code = _run(tmp, [2, 1], {2: "b", 1: "a"}, botcheck_wait_min=0.0005, botcheck_retries=2)
+    assert code == 3
+    assert calls == ["b", "b", "b"]  # first try plus two retries
+    assert done == []
+
+
 def test_finished_and_unmapped_episodes_are_skipped(fakes):
     done, calls, tmp = fakes
     (tmp / "out" / "entries").mkdir(parents=True)

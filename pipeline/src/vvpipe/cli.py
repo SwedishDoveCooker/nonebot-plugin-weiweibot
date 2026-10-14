@@ -36,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cookies", type=Path, help="Netscape cookies file")
     p.add_argument("--firefox-profile", type=Path, help="live Firefox profile dir for cookies")
     p.add_argument("--rate-limit-mb", type=float, default=0, help="MB/s, 0 means unlimited")
+    p.add_argument("--botcheck-wait-min", type=float, default=0, help="wait and retry on bot-check")
+    p.add_argument("--botcheck-retries", type=int, default=20)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--work", type=Path, required=True)
     p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
@@ -106,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
             FaceMatcher(args.models, args.ref), subtitle.Reader(), push,
             max_per_day=args.max_per_day, pause=tuple(args.pause),
             browser_profile=args.firefox_profile,
+            botcheck_wait_min=args.botcheck_wait_min,
+            botcheck_retries=args.botcheck_retries,
             rate=int(args.rate_limit_mb * 1024 * 1024) or None,
         )  # fmt: skip
     return 2

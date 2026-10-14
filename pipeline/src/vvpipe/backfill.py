@@ -136,6 +136,8 @@ def run(
     pause: tuple[int, int] = (30, 75),
     browser_profile: Path | None = None,
     rate: int | None = None,
+    botcheck_wait_min: float = 0,
+    botcheck_retries: int = 0,
 ) -> int:
     _keep_awake()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +161,32 @@ def run(
     t = threading.Thread(target=worker, name="extract", daemon=True)
     t.start()
 
+    def get_video(ep: int, vid: str) -> Path:
+        """Download one episode; when YouTube asks for verification, wait and probe again."""
+        attempt = 0
+        while True:
+            try:
+                _log(f"ep{ep}: downloading {vid}")
+                return fetch.download(
+                    vid, work_dir / "dl", cookies, rate=rate, browser_profile=browser_profile
+                )
+            except fetch.BotCheckError:
+                attempt += 1
+                if attempt > botcheck_retries or r.stop_event.is_set():
+                    raise
+                wait = botcheck_wait_min
+                _log(f"ep{ep}: bot-check, waiting {wait} min ({attempt}/{botcheck_retries})")
+                if attempt == 1 and push:
+                    try:
+                        push.notify(
+                            f"YouTube 暂时拦截下载 (第{ep}期), 每 {wait} 分钟试探一次, "
+                            "恢复后会自动继续, 暂时不用处理"
+                        )
+                    except Exception as err:  # noqa: BLE001
+                        _log(f"could not send the waiting notice: {err}")
+                if r.stop_event.wait(botcheck_wait_min * 60):
+                    raise
+
     for ep in episodes:
         if r.stop_event.is_set():
             break
@@ -172,10 +200,7 @@ def run(
             r.stop(0, f"daily limit of {max_per_day} downloads reached")
             break
         try:
-            _log(f"ep{ep}: downloading {vid}")
-            video = fetch.download(
-                vid, work_dir / "dl", cookies, rate=rate, browser_profile=browser_profile
-            )
+            video = get_video(ep, vid)
             r.state["downloads_today"] += 1
             minutes = fetch.duration_seconds(video) / 60
             if not MIN_MINUTES <= minutes <= MAX_MINUTES:
