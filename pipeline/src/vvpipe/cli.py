@@ -42,6 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-per-day", type=int, default=120)
     p.add_argument("--pause", type=int, nargs=2, default=(30, 75), metavar=("MIN", "MAX"))
 
+    p = sub.add_parser("import", help="index videos you downloaded yourself into a folder")
+    p.add_argument("folder", type=Path)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
+    p.add_argument("--bili", type=Path, help="episodes_bili.json, to recognise episodes by title")
+    p.add_argument("--push", help="user@host:/remote/index/dir to copy finished episodes to")
+    p.add_argument("--key", type=Path, help="ssh key for --push")
+    p.add_argument("--watch", action="store_true", help="keep running and pick up new files")
+
     args = ap.parse_args(argv)
     if args.cmd == "ref":
         print(json.dumps(build_prototype(args.models, args.zip, args.out)))
@@ -58,6 +67,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.cmd == "import":
+        import time
+
+        from .backfill import Push
+        from .importer import import_once, load_titles
+
+        matcher, reader = FaceMatcher(args.models, args.ref), subtitle.Reader()
+        titles = load_titles(args.bili)
+        push = Push(args.push, args.key) if args.push else None
+        while True:
+            import_once(args.folder, args.out, matcher, reader, titles, push)
+            if not args.watch:
+                return 0
+            time.sleep(30)
     if args.cmd == "backfill":
         from .backfill import Push, run
 
