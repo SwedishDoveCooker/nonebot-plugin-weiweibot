@@ -29,6 +29,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
     p.add_argument("--force", action="store_true")
 
+    p = sub.add_parser("backfill", help="download and index a range of episodes, gently")
+    p.add_argument("--first", type=int, required=True, help="newest episode to start from")
+    p.add_argument("--last", type=int, required=True, help="oldest episode to stop at")
+    p.add_argument("--map", type=Path, required=True, help="episode_map.json")
+    p.add_argument("--cookies", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--work", type=Path, required=True)
+    p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
+    p.add_argument("--push", help="user@host:/remote/index/dir to copy finished episodes to")
+    p.add_argument("--key", type=Path, help="ssh key for --push")
+    p.add_argument("--max-per-day", type=int, default=120)
+    p.add_argument("--pause", type=int, nargs=2, default=(30, 75), metavar=("MIN", "MAX"))
+
     args = ap.parse_args(argv)
     if args.cmd == "ref":
         print(json.dumps(build_prototype(args.models, args.zip, args.out)))
@@ -45,6 +58,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.cmd == "backfill":
+        from .backfill import Push, run
+
+        raw = json.loads(args.map.read_text("utf-8"))
+        mapping = {int(k): v["id"] for k, v in raw.items()}
+        step = -1 if args.first >= args.last else 1
+        episodes = list(range(args.first, args.last + step, step))
+        push = Push(args.push, args.key) if args.push else None
+        return run(
+            episodes, mapping, args.cookies, args.out, args.work,
+            FaceMatcher(args.models, args.ref), subtitle.Reader(), push,
+            max_per_day=args.max_per_day, pause=tuple(args.pause),
+        )  # fmt: skip
     return 2
 
 
