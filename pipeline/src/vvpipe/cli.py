@@ -33,7 +33,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--first", type=int, required=True, help="newest episode to start from")
     p.add_argument("--last", type=int, required=True, help="oldest episode to stop at")
     p.add_argument("--map", type=Path, required=True, help="episode_map.json")
-    p.add_argument("--cookies", type=Path, required=True)
+    p.add_argument("--cookies", type=Path, help="Netscape cookies file")
+    p.add_argument("--firefox-profile", type=Path, help="live Firefox profile dir for cookies")
+    p.add_argument("--rate-limit-mb", type=float, default=0, help="MB/s, 0 means unlimited")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--work", type=Path, required=True)
     p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
@@ -51,7 +53,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--key", type=Path, help="ssh key for --push")
     p.add_argument("--watch", action="store_true", help="keep running and pick up new files")
 
+    p = sub.add_parser("notify", help="send a text to the bot's admin group")
+    p.add_argument("text")
+    p.add_argument("--push", required=True, help="user@host:/remote/index/dir (as for backfill)")
+    p.add_argument("--key", type=Path, required=True)
+
     args = ap.parse_args(argv)
+    if args.cmd == "notify":
+        from .backfill import Push
+
+        Push(args.push, args.key).notify(args.text)
+        return 0
     if args.cmd == "ref":
         print(json.dumps(build_prototype(args.models, args.zip, args.out)))
         return 0
@@ -93,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             episodes, mapping, args.cookies, args.out, args.work,
             FaceMatcher(args.models, args.ref), subtitle.Reader(), push,
             max_per_day=args.max_per_day, pause=tuple(args.pause),
+            browser_profile=args.firefox_profile,
+            rate=int(args.rate_limit_mb * 1024 * 1024) or None,
         )  # fmt: skip
     return 2
 

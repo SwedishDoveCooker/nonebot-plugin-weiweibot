@@ -51,6 +51,16 @@ class Push:
                 [*ssh, host, f"mv -f '{part}' '{remote}/{sub}/{src.name}' && sync"], check=True
             )
 
+    def notify(self, text: str) -> None:
+        """Drop a note in the bot's notify directory; the bot forwards it to the admin group."""
+        host, _, remote = self.target.partition(":")
+        notify_dir = remote.rsplit("/index", 1)[0] + "/notify"
+        name = f"{int(time.time() * 1000)}"
+        ssh = ["ssh", "-i", str(self.key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]
+        tmp, final = f"{notify_dir}/{name}.tmp", f"{notify_dir}/{name}.txt"
+        cmd = f"cat > '{tmp}' && mv -f '{tmp}' '{final}'"
+        subprocess.run([*ssh, host, cmd], input=text.encode("utf-8"), check=True, timeout=60)
+
 
 def _keep_awake() -> None:
     if os.name == "nt":
@@ -116,7 +126,7 @@ class _Run:
 def run(
     episodes: list[int],
     mapping: dict[int, str],
-    cookies: Path,
+    cookies: Path | None,
     out_dir: Path,
     work_dir: Path,
     matcher: FaceMatcher,
@@ -124,6 +134,8 @@ def run(
     push: Push | None = None,
     max_per_day: int = 120,
     pause: tuple[int, int] = (30, 75),
+    browser_profile: Path | None = None,
+    rate: int | None = None,
 ) -> int:
     _keep_awake()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +173,9 @@ def run(
             break
         try:
             _log(f"ep{ep}: downloading {vid}")
-            video = fetch.download(vid, work_dir / "dl", cookies)
+            video = fetch.download(
+                vid, work_dir / "dl", cookies, rate=rate, browser_profile=browser_profile
+            )
             r.state["downloads_today"] += 1
             minutes = fetch.duration_seconds(video) / 60
             if not MIN_MINUTES <= minutes <= MAX_MINUTES:
@@ -184,4 +198,15 @@ def run(
         r.state["stopped"] = "finished"
         r.save()
         _log("all requested episodes are done")
+    if push:
+        have = sum(1 for e in episodes if (out_dir / "entries" / f"ep{e:04d}.jsonl").exists())
+        why = r.state.get("stopped", "stopped")
+        head = "批量索引完成" if why == "finished" else "批量索引已停止, 需要处理"
+        failed = ", ".join(sorted(r.state["failed"], key=int)) or "无"
+        try:
+            push.notify(
+                f"{head}\n原因: {why}\n范围内已完成 {have}/{len(episodes)} 期\n失败期数: {failed}"
+            )
+        except Exception as err:  # noqa: BLE001 - the report must never mask the real exit code
+            _log(f"could not send the final notification: {err}")
     return r.stop_code

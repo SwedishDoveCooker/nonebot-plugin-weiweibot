@@ -131,6 +131,7 @@ func run() error {
 		once.Do(func() { go weekly.Start(ctx) })
 	}, log)
 	go weekly.Run(ctx)
+	go notifier.WatchDropbox(ctx, filepath.Join(dataDir, "notify"), log)
 
 	// Feed the systemd watchdog only while the gateway is healthy, so a wedged
 	// connection ends in a restart instead of a silent bot.

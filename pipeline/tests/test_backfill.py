@@ -10,7 +10,7 @@ def fakes(monkeypatch, tmp_path):
     done: list[int] = []
     calls: list[str] = []
 
-    def fake_download(vid, dest, cookies, rate=0):
+    def fake_download(vid, dest, cookies=None, rate=None, browser_profile=None):
         calls.append(vid)
         if vid == "BOT":
             raise fetch.BotCheckError("sign in")

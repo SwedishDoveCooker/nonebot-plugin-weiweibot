@@ -9,7 +9,7 @@ import yt_dlp
 
 # 1080p H.264 + AAC when available (about 350 MB for a 35-minute episode).
 FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]"
-RATE_LIMIT = 4 * 1024 * 1024  # bytes per second
+RATE_LIMIT: int | None = None  # bytes per second; None means unlimited
 
 _BOT_MARKERS = ("not a bot", "Sign in to confirm", "page needs to be reloaded", "HTTP Error 429")
 
@@ -18,12 +18,16 @@ class BotCheckError(RuntimeError):
     """YouTube asked for verification or is throttling: stop everything and tell the owner."""
 
 
-def download(video_id: str, dest_dir: Path, cookies: Path, rate: int = RATE_LIMIT) -> Path:
+def download(
+    video_id: str,
+    dest_dir: Path,
+    cookies: Path | None = None,
+    rate: int | None = RATE_LIMIT,
+    browser_profile: Path | None = None,
+) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    opts = {
+    opts: dict = {
         "format": FORMAT,
-        "cookiefile": str(cookies),
-        "ratelimit": rate,
         "retries": 3,
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 1,
@@ -36,6 +40,12 @@ def download(video_id: str, dest_dir: Path, cookies: Path, rate: int = RATE_LIMI
         "continuedl": True,
         "overwrites": False,
     }
+    if browser_profile is not None:  # the live login of a Firefox that stays open
+        opts["cookiesfrombrowser"] = ("firefox", str(browser_profile), None, None)
+    elif cookies is not None:
+        opts["cookiefile"] = str(cookies)
+    if rate:
+        opts["ratelimit"] = rate
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
