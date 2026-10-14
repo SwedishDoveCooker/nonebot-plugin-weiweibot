@@ -185,6 +185,11 @@ func (c *Client) ReplyText(ctx context.Context, t Target, msgID, text string) er
 	}, nil)
 }
 
+// SendActive sends a text message that is not a reply to anything (subject to QQ's active-message quota).
+func (c *Client) SendActive(ctx context.Context, t Target, text string) error {
+	return c.do(ctx, http.MethodPost, t.base()+"/messages", map[string]any{"content": text, "msg_type": 0}, nil)
+}
+
 // ReplyImage uploads image bytes (file_data) and sends them as a passive reply to msgID.
 // An optional caption is sent as the message content.
 func (c *Client) ReplyImage(ctx context.Context, t Target, msgID string, img []byte, caption string) error {

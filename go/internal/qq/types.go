@@ -12,6 +12,18 @@ type Author struct {
 	ID           string `json:"id"`
 	MemberOpenID string `json:"member_openid"`
 	UserOpenID   string `json:"user_openid"`
+	UnionOpenID  string `json:"union_openid"`
+}
+
+// IDs lists every identifier the platform may use for this author.
+func (a Author) IDs() []string {
+	var out []string
+	for _, s := range []string{a.MemberOpenID, a.UserOpenID, a.UnionOpenID, a.ID} {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Message is the payload of GROUP_MESSAGE_CREATE, GROUP_AT_MESSAGE_CREATE and C2C_MESSAGE_CREATE.

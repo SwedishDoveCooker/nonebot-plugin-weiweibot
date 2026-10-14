@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"vvbot/internal/lib"
+	"vvbot/internal/ops"
 	"vvbot/internal/qq"
 )
 
@@ -39,6 +40,15 @@ type Config struct {
 	Groups       map[string]bool // empty means every group
 	UploadDir    string
 	EnableUpload bool // /upload is off until asked for
+	Owners       map[string]bool
+	MinSim       float64 // frames below this face similarity are only used when nothing else matches
+}
+
+// Extras are the optional operational pieces; the bot works without them.
+type Extras struct {
+	Weekly   *ops.Weekly
+	Notifier *ops.Notifier
+	Library  func() int
 }
 
 type accState struct {
@@ -52,6 +62,7 @@ type Bot struct {
 	cfg  Config
 	log  *slog.Logger
 	http *http.Client
+	x    Extras
 
 	mu       sync.Mutex
 	seen     map[string]time.Time
@@ -59,9 +70,9 @@ type Bot struct {
 	lastSeen map[string]time.Time
 }
 
-func New(api *qq.Client, h *lib.Holder, cfg Config, log *slog.Logger) *Bot {
+func New(api *qq.Client, h *lib.Holder, cfg Config, x Extras, log *slog.Logger) *Bot {
 	return &Bot{
-		api: api, lib: h, cfg: cfg, log: log,
+		api: api, lib: h, cfg: cfg, log: log, x: x,
 		http:     &http.Client{Timeout: 30 * time.Second},
 		seen:     map[string]time.Time{},
 		acc:      map[string]accState{},
@@ -88,6 +99,9 @@ func (b *Bot) HandleEvent(ctx context.Context, typ string, raw json.RawMessage) 
 	if b.duplicate(m.ID) {
 		return
 	}
+	if tgt.Group && b.x.Notifier != nil && tgt.ID == b.x.Notifier.GroupID() {
+		b.x.Notifier.Flush(ctx, m.ID)
+	}
 	text, _ := cleanContent(m.Content)
 	cmd, args, isCmd := parseCommand(text)
 	key := tgt.ID + "|" + sender
@@ -102,7 +116,11 @@ func (b *Bot) HandleEvent(ctx context.Context, typ string, raw json.RawMessage) 
 	if b.throttled(sender) {
 		return
 	}
-	b.log.Info("command", "cmd", cmd, "args", args, "group", tgt.Group, "sender", sender)
+	logged := args
+	if cmd == "auth" || cmd == "auth+" {
+		logged = fmt.Sprintf("[redacted %d bytes]", len(args)) // cookies must never reach the logs
+	}
+	b.log.Info("command", "cmd", cmd, "args", logged, "group", tgt.Group, "sender", sender)
 
 	switch cmd {
 	case "help":
@@ -117,7 +135,49 @@ func (b *Bot) HandleEvent(ctx context.Context, typ string, raw json.RawMessage) 
 		if b.cfg.EnableUpload {
 			b.cmdUpload(ctx, tgt, m.ID, m.Attachments)
 		}
+	case "auth", "auth+", "go", "status":
+		b.cmdOwner(ctx, tgt, &m, cmd, args)
 	}
+}
+
+func (b *Bot) isOwner(a qq.Author) bool {
+	for _, id := range a.IDs() {
+		if b.cfg.Owners[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// cmdOwner handles the administrative commands; anyone else gets no answer at all.
+func (b *Bot) cmdOwner(ctx context.Context, t qq.Target, m *qq.Message, cmd, args string) {
+	if b.x.Weekly == nil {
+		return
+	}
+	if !b.isOwner(m.Author) {
+		b.log.Warn("owner command denied", "cmd", cmd, "ids", strings.Join(m.Author.IDs(), ","))
+		return
+	}
+	var out string
+	switch cmd {
+	case "auth", "auth+":
+		if args == "" {
+			out = "用法: /auth 后面跟浏览器里复制的 YouTube Cookie 字符串或 cookies.txt 内容; 太长就分几条, 后面的用 /auth+ 追加"
+			break
+		}
+		out = b.x.Weekly.HandleAuth(ctx, args, cmd == "auth+")
+		if t.Group {
+			out += "\n(下次建议私聊发送, 群里的人能看到)"
+		}
+	case "go":
+		out = b.x.Weekly.Go(ctx)
+	case "status":
+		out = b.x.Weekly.Status()
+		if b.x.Library != nil {
+			out += fmt.Sprintf("\n图库: %d 张", b.x.Library())
+		}
+	}
+	b.text(ctx, t, m.ID, out)
 }
 
 func (b *Bot) duplicate(id string) bool {
@@ -196,9 +256,9 @@ func (b *Bot) text(ctx context.Context, t qq.Target, msgID, s string) {
 }
 
 func (b *Bot) image(ctx context.Context, t qq.Target, msgID string, e lib.Entry) {
-	data, err := os.ReadFile(e.Path)
+	data, err := e.Bytes()
 	if err != nil {
-		b.log.Error("read image", "path", e.Path, "err", err)
+		b.log.Error("read image", "text", e.Text, "err", err)
 		b.text(ctx, t, msgID, "图片读取失败了喵")
 		return
 	}
@@ -215,7 +275,7 @@ func (b *Bot) cmdVV(ctx context.Context, t qq.Target, msgID, args string) {
 		b.text(ctx, t, msgID, "请输入查询参数喵")
 		return
 	}
-	e, ok := lib.Pick(b.lib.Get().Search(args))
+	e, ok := lib.Pick(b.lib.Get().Search(args), b.cfg.MinSim)
 	if !ok {
 		b.text(ctx, t, msgID, "not found\n请注意, 关键词中的标点符号会被忽略")
 		return
@@ -224,7 +284,7 @@ func (b *Bot) cmdVV(ctx context.Context, t qq.Target, msgID, args string) {
 }
 
 func (b *Bot) cmdRandom(ctx context.Context, t qq.Target, msgID string) {
-	e, ok := b.lib.Get().Random()
+	e, ok := b.lib.Get().Random(b.cfg.MinSim)
 	if !ok {
 		b.text(ctx, t, msgID, "图库还是空的喵")
 		return
@@ -266,7 +326,7 @@ func (b *Bot) cmdAcc(ctx context.Context, t qq.Target, msgID, key, args string) 
 		var sb strings.Builder
 		sb.WriteString("匹配到多张图片, 请发送数字选择\n")
 		for i, e := range shown {
-			fmt.Fprintf(&sb, "%d : %s\n", i+1, e.Text)
+			fmt.Fprintf(&sb, "%d : %s\n", i+1, e.Label())
 		}
 		if len(res) > len(shown) {
 			fmt.Fprintf(&sb, "...还有 %d 条未显示, 请加上更多关键字", len(res)-len(shown))

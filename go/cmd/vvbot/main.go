@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"vvbot/internal/bot"
 	"vvbot/internal/lib"
+	"vvbot/internal/ops"
 	"vvbot/internal/qq"
 	"vvbot/internal/sdnotify"
 )
@@ -51,7 +53,8 @@ func run() error {
 		}
 		out = io.MultiWriter(os.Stderr, &lumberjack.Logger{Filename: lf, MaxSize: 10, MaxBackups: 5, MaxAge: 30, Compress: true})
 	}
-	log := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	notifier := ops.NewNotifier(env("VV_NOTIFY_GROUP", ""))
+	log := slog.New(ops.WrapLogHandler(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}), notifier))
 
 	groups := map[string]bool{}
 	for _, g := range strings.Split(env("VV_GROUPS", ""), ",") {
@@ -62,15 +65,31 @@ func run() error {
 
 	holder := &lib.Holder{}
 	libDirs := strings.Split(env("VV_LIB_DIRS", filepath.Join(dataDir, "legacy")), ",")
+	indexDir := env("VV_INDEX_DIR", filepath.Join(dataDir, "index"))
+	minSim, err := strconv.ParseFloat(env("VV_MIN_SIM", "0.36"), 64)
+	if err != nil {
+		return fmt.Errorf("VV_MIN_SIM: %w", err)
+	}
 	reload := func() {
 		var all []lib.Entry
 		for _, d := range libDirs {
-			l, err := lib.LoadDir(strings.TrimSpace(d))
+			if d = strings.TrimSpace(d); d == "" {
+				continue
+			}
+			es, err := lib.LoadDir(d)
 			if err != nil {
 				log.Error("load library", "dir", d, "err", err)
 				continue
 			}
-			all = append(all, l.Entries()...)
+			all = append(all, es...)
+		}
+		if es, skipped, err := lib.LoadIndex(indexDir); err != nil {
+			log.Error("load index", "dir", indexDir, "err", err)
+		} else {
+			all = append(all, es...)
+			for _, s := range skipped {
+				log.Warn("index episode skipped", "why", s)
+			}
 		}
 		if len(all) == 0 && holder.Get().Len() > 0 {
 			log.Error("reload produced an empty library, keeping the old one")
@@ -84,12 +103,34 @@ func run() error {
 	hc := &http.Client{Timeout: 30 * time.Second}
 	ts := qq.NewTokenSource(appID, secret, hc)
 	api := qq.NewClient(ts, hc, log)
-	b := bot.New(api, holder, bot.Config{Groups: groups, UploadDir: filepath.Join(dataDir, "uploads"), EnableUpload: env("VV_ENABLE_UPLOAD", "") == "1"}, log)
+	notifier.Bind(api, log)
+
+	store, err := ops.OpenStore(filepath.Join(dataDir, "state", "state.json"))
+	if err != nil {
+		return fmt.Errorf("open state: %w", err)
+	}
+	weekly := ops.NewWeekly(store, notifier, filepath.Join(dataDir, "secrets"), log)
+
+	owners := map[string]bool{}
+	for _, o := range strings.Split(env("VV_OWNERS", ""), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			owners[o] = true
+		}
+	}
+	b := bot.New(api, holder, bot.Config{
+		Groups: groups, UploadDir: filepath.Join(dataDir, "uploads"),
+		EnableUpload: env("VV_ENABLE_UPLOAD", "") == "1", Owners: owners, MinSim: minSim,
+	}, bot.Extras{Weekly: weekly, Notifier: notifier, Library: func() int { return holder.Get().Len() }}, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gw := qq.NewGateway(api, ts, qq.IntentGroupAndC2C, b.HandleEvent, func() { sdnotify.Send("READY=1") }, log)
+	var once sync.Once
+	gw := qq.NewGateway(api, ts, qq.IntentGroupAndC2C, b.HandleEvent, func() {
+		sdnotify.Send("READY=1")
+		once.Do(func() { go weekly.Start(ctx) })
+	}, log)
+	go weekly.Run(ctx)
 
 	// Feed the systemd watchdog only while the gateway is healthy, so a wedged
 	// connection ends in a restart instead of a silent bot.
@@ -128,6 +169,7 @@ func run() error {
 
 	log.Info("vvbot starting", "appid", appID, "data", dataDir, "groups", len(groups))
 	gw.Run(ctx)
+	weekly.MarkClean()
 	log.Info("vvbot stopped")
 	return nil
 }
