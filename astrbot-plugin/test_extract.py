@@ -1,15 +1,19 @@
-"""Offline check of the phrase extraction (the plugin itself needs AstrBot to import)."""
+"""Offline checks of the plugin's pure logic (the plugin itself needs AstrBot to import)."""
 
 import asyncio
 import importlib.util
 import pathlib
 import sys
+import time
 import types
+from collections import defaultdict, deque
 
-# main.py imports aiohttp and astrbot at module level; stub only what extract_query does not use.
+# main.py imports aiohttp and astrbot at module level; stub only what the checks below do not use.
 for name in ("aiohttp", "astrbot", "astrbot.api", "astrbot.api.event", "astrbot.api.star"):
     sys.modules.setdefault(name, types.ModuleType(name))
-sys.modules["astrbot.api"].logger = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+sys.modules["astrbot.api"].logger = types.SimpleNamespace(
+    info=lambda *a, **k: None, warning=lambda *a, **k: None
+)
 ev = sys.modules["astrbot.api.event"]
 ev.AstrMessageEvent = object
 ev.filter = types.SimpleNamespace(
@@ -25,17 +29,16 @@ spec = importlib.util.spec_from_file_location("vv_main", pathlib.Path(__file__).
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-CASES = [
-    ("有没有群友有那个说「你根本不在乎」的表情包", "你根本不在乎"),  # the exact message from the first trial
-    ("好像只有", None),
-    ("我根本不在乎", None),
-    ("有没有群友有这个表情包", None),  # asks, but says nothing to search for
-    ("就是那个说「你根本不在乎」的表情包有吗 有没有", "你根本不在乎"),
-    ("有没有那个说'美国想要垄断'的图", "美国想要垄断"),
-    ("谁有那个说文化自信的表情包", "文化自信"),
-    ("今天天气不错", None),
-    ("我觉得这个说法不对", None),
-]
+bad = 0
+
+
+def check(label, got, want):
+    global bad
+    ok = got == want
+    bad += not ok
+    print(("OK  " if ok else "FAIL"), label, "->", repr(got), "" if ok else f"(want {want!r})")
+
+
 REST = [
     ("/vv 文化自信", ("vv",), "文化自信"),
     ("vv  你好 世界", ("vv",), "你好 世界"),
@@ -47,20 +50,13 @@ REST = [
     ("/authadd x", ("authadd",), "x"),
     ("/auth", ("auth",), ""),
 ]
-bad = 0
 for text, names, want in REST:
-    got = mod.rest(text, *names)
-    ok = got == want
-    bad += not ok
-    print(("OK  " if ok else "FAIL"), "rest", repr(text), names, "->", repr(got), "" if ok else f"(want {want!r})")
-for text, want in CASES:
-    got = mod.extract_query(text)
-    ok = got == want
-    bad += not ok
-    print(("OK  " if ok else "FAIL"), repr(text), "->", repr(got), "" if ok else f"(want {want!r})")
+    check(f"rest {text!r} {names}", mod.rest(text, *names), want)
+
 QUOTES = [
     ("你根本不在乎", "你根本不在乎"),
     ("「你根本不在乎」", "你根本不在乎"),
+    ("→我们不一样", "我们不一样"),
     ("“我们不一样”。\n(解释)", "我们不一样"),
     ("无", None),
     ("", None),
@@ -68,37 +64,75 @@ QUOTES = [
     ("这是一段特别特别特别特别特别特别特别特别特别特别特别特别长的回答不会是台词", None),
 ]
 for raw, want in QUOTES:
-    got = mod.clean_quote(raw)
-    ok = got == want
-    bad += not ok
-    print(("OK  " if ok else "FAIL"), "clean_quote", repr(raw), "->", repr(got), "" if ok else f"(want {want!r})")
+    check(f"clean_quote {raw!r}", mod.clean_quote(raw), want)
 
 
 async def judge_cases():
     j = mod.Judge("http://unused")
-    calls = []
+    seen = []
 
     def answering(*texts):
         it = iter(texts)
 
         async def fake(system, user, max_tokens):
-            calls.append(user)
+            seen.append(user)
             return next(it)
 
         return fake
 
-    j._chat = answering("「你根本不在乎」")
-    out = [(await j.wanted_quote("有没有那个人说你根本不在乎的图"), "你根本不在乎")]
+    j._chat = answering("→我们不一样")
+    out = [("verdict", await j.wanted_quote(["甲: 有没有那个", "甲: 就是说我们不一样的图"]), "我们不一样")]
+    out.append(("prompt ends with the arrow", seen[-1].endswith("\n→"), True))
     j._chat = answering("无")
-    out.append((await j.wanted_quote("今天中午吃啥"), None))
+    out.append(("no request", await j.wanted_quote(["甲: 今天中午吃啥"]), None))
     await j.sem.acquire()  # the board is busy: the message is skipped, not queued
-    out.append((await j.wanted_quote("有没有那个说x的图"), None))
-    out.append((len(calls), 2))  # the busy case never reached the model
+    out.append(("busy", await j.wanted_quote(["甲: 有没有那个说x的图"]), None))
+    out.append(("busy never reached the model", len(seen), 2))
     return out
 
-for got, want in asyncio.run(judge_cases()):
-    ok = got == want
-    bad += not ok
-    print(("OK  " if ok else "FAIL"), "judge ->", repr(got), "" if ok else f"(want {want!r})")
-sys.exit(1 if bad else 0)
 
+for label, got, want in asyncio.run(judge_cases()):
+    check(f"judge {label}", got, want)
+
+# The log of recent messages: labels per speaker, old messages expire, the window is bounded.
+plugin = mod.VVSearch.__new__(mod.VVSearch)
+plugin._log = defaultdict(list)
+check("remember 1", plugin._remember("g", "u1", "有没有群友有那个"), ["甲: 有没有群友有那个"])
+check("remember 2", plugin._remember("g", "u2", "哈哈"), ["甲: 有没有群友有那个", "乙: 哈哈"])
+check(
+    "remember 3 keeps the labels",
+    plugin._remember("g", "u1", "就是那个说我们不一样的图"),
+    ["甲: 有没有群友有那个", "乙: 哈哈", "甲: 就是那个说我们不一样的图"],
+)
+plugin._log["g"] = [(time.time() - mod.CONTEXT_TTL_S - 1, "u1", "很久以前")]
+check("old messages expire", plugin._remember("g", "u3", "新消息"), ["甲: 新消息"])
+for i in range(10):
+    lines = plugin._remember("h", "u1", f"消息{i}")
+check("the window is bounded", len(lines), mod.CONTEXT_LINES)
+check("the newest message is last", lines[-1], "甲: 消息9")
+
+# the model-call budget
+plugin._last = {}
+plugin._llm_calls = defaultdict(deque)
+calls = []
+
+
+async def fake_quote(lines):
+    calls.append(lines)
+    return "我们不一样"
+
+
+plugin.judge = types.SimpleNamespace(wanted_quote=fake_quote)
+
+
+async def budget():
+    got = [await plugin._ask_model("g", ["甲: x"]) for _ in range(mod.LLM_PER_MIN + 3)]
+    plugin._last["c"] = time.time()  # a reply just went out: stay quiet and do not call the model
+    return got, await plugin._ask_model("c", ["甲: x"])
+
+
+got, cooled = asyncio.run(budget())
+check("calls per minute are capped", len(calls), mod.LLM_PER_MIN)
+check("over the cap gives None", got[-1], None)
+check("cooldown skips the model", cooled, None)
+sys.exit(1 if bad else 0)

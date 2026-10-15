@@ -5,7 +5,7 @@ lives in the Go services on the same machine. This plugin only speaks QQ through
 calls their local HTTP API (127.0.0.1:8770), so either front-end can hold the QQ connection.
 
 Commands: /help /vv /r /acc (then a number) and, for the owner, /auth /authadd /go /status.
-Without being addressed it answers "有没有群友有那个说「…」的表情包"-style requests.
+Without being addressed, a local model reads the recent chat and answers picture requests,\neven ones spread over several messages.
 """
 
 from __future__ import annotations
@@ -36,36 +36,28 @@ HELP = """使用说明:
 /help : 显示本说明
 @机器人 + 命令 或直接发送命令都可以, 关键字可以用空格分开, 不区分大小写"""
 
-# "有没有群友有那个说「你根本不在乎」的表情包", "谁有那个说「…」的图", ...
-ASK = re.compile(
-    r"(有没有|谁有|有谁有|求|来个|发个|想要).{0,40}(表情包|表情|梗图|图)"
-    r"|(表情包|表情|梗图|图).{0,6}(有吗|有没有|有无|在哪|谁有)"
-)
-QUOTED = re.compile(r"[\"“'‘「『《](.{2,30}?)[\"”'’」』》]")
-SAID = re.compile(r"(?:说|讲|喊|写)[了着]?[:：]?\s*(.{2,30})")
-NOISE = re.compile(
-    r"有没有|有谁有|谁有|群友|这个|那个|就是|之类的|的表情包|表情包|表情|梗图|求|来个|发个|想要|[?？!！。,，~ ]"
-)
-
-
-# Words that make a message worth showing to the local model; everything else is never sent.
-CUES = re.compile(r"表情|梗图|图|台词|谁有|有没有|哪期|出处|截图|那句|原话|说过|怎么说")
 SYS_ASK = (
-    "你在一个QQ群里。如果这条群消息是在向群友要某句台词或某个梗的表情包/图片,"
-    "只输出对方想找的那句台词原文;否则只输出 无。\n"
-    "例:“有没有那个说我们不一样的图”→我们不一样\n"
-    "例:“求一张美国想要垄断的梗图”→美国想要垄断\n"
-    "例:“今天中午吃啥”→无\n"
-    "例:“这个表情包不好看”→无"
+    "你在一个QQ群里旁观。下面是群里最近的聊天记录(旧→新)。"
+    "判断最新一条之后,群友是不是在向大家要某句台词或某个梗的表情包/图片,"
+    "想要的内容可能分好几条消息才说完。如果是,只输出想找的那句台词原文;否则只输出 无。\n"
+    "例:\n甲: 有没有群友有那个\n乙: 哈哈\n甲: 就是那个说我们不一样的图\n→我们不一样\n"
+    "例:\n甲: 求一张美国想要垄断的梗图\n→美国想要垄断\n"
+    "例:\n甲: 有没有群友有那个说「你根本不在乎」的表情包\n→你根本不在乎\n"
+    "例:\n甲: 谁有文化自信的图\n乙: 我找找\n→文化自信\n"
+    "例:\n甲: 有没有群友有那个\n→无\n"
+    "例:\n甲: 今天中午吃啥\n→无"
 )
 LLM_MIN_SCORE = 0.7  # a guess from the model needs a clearly matching picture before it speaks
-LLM_PER_MIN = 6
-LLM_TIMEOUT_S = 40
+LLM_PER_MIN = 12
+LLM_TIMEOUT_S = 60
+CONTEXT_LINES = 6  # recent messages shown to the model, so a request can span several messages
+CONTEXT_TTL_S = 120
+LABELS = "甲乙丙丁戊己庚辛"
 
 
 def clean_quote(raw: str) -> str | None:
     lines = raw.strip().splitlines()
-    q = re.sub(r"^[\s\"“'‘「『《]+|[\s\"”'’」』》。.!！?？]+$", "", lines[0] if lines else "")
+    q = re.sub(r"^[\s\"“'‘「『《→]+|[\s\"”'’」』》。.!！?？]+$", "", lines[0] if lines else "")
     return q if 2 <= len(q) <= 30 and q != "无" else None
 
 
@@ -90,29 +82,16 @@ class Judge:
                 r.raise_for_status()
                 return (await r.json())["choices"][0]["message"]["content"].strip()
 
-    async def wanted_quote(self, text: str) -> str | None:
-        """The quote being asked for, or None when the message is not such a request.
+    async def wanted_quote(self, lines: list[str]) -> str | None:
+        """The quote being asked for after the newest line, or None.
 
-        One call only: the shared system prompt stays in the server's prompt cache, and a second
-        call with a different prompt would push it out again (the board has a single slot).
+        One call only: the system prompt and the older lines stay in the server's prompt cache
+        (the chat log only ever grows at the end), and the board has a single slot.
         """
         if self.sem.locked():
             return None
         async with self.sem:
-            return clean_quote(await self._chat(SYS_ASK, text, 20))
-
-def extract_query(text: str) -> str | None:
-    """The phrase to look for, or None when the message is not asking for a picture."""
-    if not ASK.search(text):
-        return None
-    m = QUOTED.search(text)
-    if m:
-        return m.group(1).strip()
-    m = SAID.search(text)
-    candidate = m.group(1) if m else text
-    candidate = NOISE.sub("", candidate).strip()
-    return candidate if len(candidate) >= 2 else None
-
+            return clean_quote(await self._chat(SYS_ASK, "\n".join(lines) + "\n→", 20))
 
 def rest(text: str, *names: str) -> str:
     """What follows the command word, whether or not the platform already removed it."""
@@ -137,6 +116,7 @@ class VVSearch(Star):
         llm = cfg.get("llm") or {}
         self.judge = Judge(llm["url"], llm.get("model", "local")) if llm.get("url") else None
         self._llm_calls: dict[str, deque[float]] = defaultdict(deque)
+        self._log: dict[str, list[tuple[float, str, str]]] = defaultdict(list)  # group -> (time, who, text)
         os.makedirs(TMP, exist_ok=True)
 
     # ---- helpers -------------------------------------------------------------------------
@@ -178,9 +158,19 @@ class VVSearch(Star):
         self._last[gid] = now
         return False
 
-    async def _ask_model(self, event: AstrMessageEvent, text: str) -> str | None:
-        """Let the local model decide whether this message is a picture request (rate limited)."""
-        gid = event.get_group_id() or event.get_sender_id()
+    def _remember(self, gid: str, sender: str, text: str) -> list[str]:
+        """Add a message to the group's recent log and return it as labelled lines."""
+        now = time.time()
+        log = [m for m in self._log[gid] if now - m[0] < CONTEXT_TTL_S]
+        log.append((now, sender, text))
+        self._log[gid] = log = log[-CONTEXT_LINES:]
+        who: dict[str, str] = {}
+        for _, s, _ in log:
+            who.setdefault(s, LABELS[len(who) % len(LABELS)])
+        return [f"{who[s]}: {t}" for _, s, t in log]
+
+    async def _ask_model(self, gid: str, lines: list[str]) -> str | None:
+        """Let the local model decide whether the group is asking for a picture (rate limited)."""
         now = time.time()
         if now - self._last.get(gid, 0) < COOLDOWN_S:
             return None
@@ -191,13 +181,12 @@ class VVSearch(Star):
             return None
         calls.append(now)
         try:
-            query = await self.judge.wanted_quote(text)
+            query = await self.judge.wanted_quote(lines)
         except Exception as err:  # noqa: BLE001 - the model being down must not break the bot
             logger.warning(f"vv_search: local model unavailable: {err!r}")
             return None
-        logger.info(f"vv_search model verdict for {text[:40]!r}: {query!r}")
+        logger.info(f"vv_search model verdict for {lines[-1][:40]!r}: {query!r}")
         return query
-
     @filter.llm_tool(name="search_meme")
     async def search_meme(self, event: AstrMessageEvent, query: str):
         """Find the 这就是中国 picture whose subtitle best matches a quote and send it to the chat.
@@ -319,17 +308,18 @@ class VVSearch(Star):
         if text.isdigit() and len(text) <= 3 and self._who(event) in self._pending:
             yield await self._pick(event, int(text))
             return
-        query = extract_query(text)
-        from_model = False
-        if query is None and self.judge and 2 <= len(text) <= 80 and CUES.search(text):
-            query, from_model = await self._ask_model(event, text), True
+        if self.judge is None or not 2 <= len(text) <= 80:
+            return
+        gid = event.get_group_id() or event.get_sender_id()
+        query = await self._ask_model(gid, self._remember(gid, event.get_sender_id(), text))
         if query is None or self._cooling(event):
             return
+        self._log[gid] = []  # this request is being answered, do not answer it again
         hits = await self._json("/api/search", q=query, k=6)
-        if from_model and hits and hits[0]["source"] != "literal" and hits[0]["score"] < LLM_MIN_SCORE:
-            logger.info(f"vv_search model guess {query!r} dropped, best score {hits[0]['score']:.2f}")
-            return
         if not hits:
+            return
+        if hits[0]["source"] != "literal" and hits[0]["score"] < LLM_MIN_SCORE:
+            logger.info(f"vv_search model guess {query!r} dropped, best score {hits[0]['score']:.2f}")
             return
         path = await self._image_path(hits[0]["key"])
         if path:
