@@ -87,6 +87,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--threads", type=int)
 
+    p = sub.add_parser(
+        "legacy-import", help="add the old nonebot-plugin-weiweibot pictures (assets.tar.gz)"
+    )
+    p.add_argument("--tar", type=Path, required=True)
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--force", action="store_true")
+
+    p = sub.add_parser(
+        "sources-sync", help="write source records (title of each episode of the show)"
+    )
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--bili", type=Path, required=True, help="episodes_bili.json")
+
     p = sub.add_parser("notify", help="send a text to the bot's admin group")
     p.add_argument("text")
     p.add_argument("--push", required=True, help="user@host:/remote/index/dir (as for backfill)")
@@ -112,6 +125,20 @@ def main(argv: list[str] | None = None) -> int:
             proxy=args.proxy, poll=args.poll, embed_url=args.embed_url,
         )  # fmt: skip
         Daemon(cfg, fetcher=make_fetcher(cfg)).run()
+        return 0
+    if args.cmd == "legacy-import":
+        from . import legacy
+
+        print(
+            json.dumps(
+                legacy.import_tar(args.tar, args.index, force=args.force), ensure_ascii=False
+            )
+        )
+        return 0
+    if args.cmd == "sources-sync":
+        from . import sources
+
+        print(json.dumps({"written": sources.sync_show(args.index, args.bili)}))
         return 0
     if args.cmd == "notify":
         from .backfill import Push

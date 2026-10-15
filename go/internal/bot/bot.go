@@ -444,7 +444,7 @@ func (b *Bot) Search(ctx context.Context, q string, k int) []api.Result {
 func toAPIResult(e lib.Entry, score float32, source string) api.Result {
 	return api.Result{
 		Key: e.Key(), Text: e.Text, Ep: e.Ep, T: e.T, Face: e.Sim,
-		Score: score, Source: source, Label: e.Label(),
+		Score: score, Source: source, Label: e.Label(), Detail: e.Detail(),
 	}
 }
 

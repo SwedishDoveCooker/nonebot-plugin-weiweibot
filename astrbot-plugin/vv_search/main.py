@@ -19,6 +19,7 @@ from collections import defaultdict, deque
 
 import aiohttp
 
+import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
@@ -184,6 +185,14 @@ class VVSearch(Star):
             async with s.request(method, f"{self.api}{path}", params=params, data=body.encode(), headers=headers) as r:
                 return await r.text() if r.status == 200 else f"接口返回 {r.status}"
 
+    @staticmethod
+    def _pic(event, path: str, hit: dict | None):
+        """The picture plus a line saying where it comes from."""
+        parts = [Comp.Image.fromFileSystem(path)]
+        if detail := (hit or {}).get("detail"):
+            parts.append(Comp.Plain(detail))
+        return event.chain_result(parts)
+
     def _who(self, event: AstrMessageEvent) -> str:
         return f"{event.get_group_id() or 'dm'}|{event.get_sender_id()}"
 
@@ -252,7 +261,7 @@ class VVSearch(Star):
             path = await self._image_path(hit["key"])
             if not path:
                 return "图片发送失败"
-            await ev.send(ev.image_result(path))
+            await ev.send(self._pic(ev, path, hit))
             sent.append(hit)
             self._last[gid] = time.time()
             self._replies[gid].append(time.time())
@@ -325,7 +334,7 @@ class VVSearch(Star):
         path = await self._image_path(hits[0]["key"])
         if not path:
             return "图片发送失败"
-        await event.send(event.image_result(path))
+        await event.send(self._pic(event, path, hits[0]))
         return f"已发送图片: {hits[0]['text']}"
 
     # ---- commands ------------------------------------------------------------------------
@@ -348,14 +357,14 @@ class VVSearch(Star):
             return
         path = await self._image_path(hits[0]["key"])
         logger.info(f"vv_search /vv {query!r} -> {hits[0]['text']!r} ({hits[0]['source']})")
-        yield event.image_result(path) if path else event.plain_result("图片发送失败了喵, 请稍后再试")
+        yield self._pic(event, path, hits[0]) if path else event.plain_result("图片发送失败了喵, 请稍后再试")
 
     @filter.command("r")
     async def random_pic(self, event: AstrMessageEvent):
         """/r: a random picture."""
         hit = await self._json("/api/random")
         path = await self._image_path(hit["key"]) if hit else None
-        yield event.image_result(path) if path else event.plain_result("图库还是空的喵")
+        yield self._pic(event, path, hit) if path else event.plain_result("图库还是空的喵")
 
     @filter.command("acc")
     async def acc(self, event: AstrMessageEvent):
@@ -374,7 +383,7 @@ class VVSearch(Star):
             return
         if len(hits) == 1:
             path = await self._image_path(hits[0]["key"])
-            yield event.image_result(path) if path else event.plain_result("图片发送失败了喵, 请稍后再试")
+            yield self._pic(event, path, hits[0]) if path else event.plain_result("图片发送失败了喵, 请稍后再试")
             return
         self._pending[self._who(event)] = (time.time() + ACC_TTL_S, hits)
         lines = [f"{i + 1} : {h['label']}" for i, h in enumerate(hits)]
@@ -387,7 +396,7 @@ class VVSearch(Star):
         if not 1 <= n <= len(hits):
             return event.plain_result(f"请输入 1 到 {len(hits)} 之间的数字喵")
         path = await self._image_path(hits[n - 1]["key"])
-        return event.image_result(path) if path else event.plain_result("图片发送失败了喵, 请稍后再试")
+        return self._pic(event, path, hits[n - 1]) if path else event.plain_result("图片发送失败了喵, 请稍后再试")
 
     # ---- the owner's maintenance commands -----------------------------------------------
     @filter.command("auth")
@@ -484,4 +493,4 @@ class VVSearch(Star):
         if path:
             logger.info(f"vv_search proactive {query!r} -> {hits[0]['text']!r} ({hits[0]['source']}, {hits[0]['score']:.2f})")
             self._replies[gid].append(time.time())
-            yield event.image_result(path)
+            yield self._pic(event, path, hits[0])

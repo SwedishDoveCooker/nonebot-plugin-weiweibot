@@ -32,6 +32,7 @@ type Result struct {
 	Score  float32 `json:"score"`  // 1 for literal matches, cosine similarity for semantic ones
 	Source string  `json:"source"` // "literal" or "semantic"
 	Label  string  `json:"label"`  // text plus episode and time, as shown in lists
+	Detail string  `json:"detail"` // the full origin of the picture
 }
 
 // Backend is what the API needs from the bot.

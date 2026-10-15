@@ -22,6 +22,11 @@ ev.filter = types.SimpleNamespace(
     llm_tool=lambda *a, **k: (lambda f: f),
     EventMessageType=types.SimpleNamespace(GROUP_MESSAGE=1),
 )
+comp = types.ModuleType("astrbot.api.message_components")
+comp.Image = types.SimpleNamespace(fromFileSystem=lambda path: ("image", path))
+comp.Plain = lambda text: ("plain", text)
+sys.modules["astrbot.api.message_components"] = comp
+sys.modules["astrbot.api"].message_components = comp
 sys.modules["astrbot.api.star"].Context = object
 sys.modules["astrbot.api.star"].Star = object
 
@@ -179,5 +184,15 @@ check("capped after the limit", plugin._reply_capped("g"), True)
 plugin._replies["g"].clear()
 plugin._replies["g"].extend([time.time() - mod.REPLY_WINDOW_S - 1, time.time()])
 check("old replies stop counting", plugin._reply_capped("g"), False)
+
+# a picture goes out with the line saying where it comes from
+event = types.SimpleNamespace(chain_result=lambda parts: parts)
+check(
+    "picture with source",
+    mod.VVSearch._pic(event, "/tmp/a.jpg", {"detail": "来源: x"}),
+    [("image", "/tmp/a.jpg"), ("plain", "来源: x")],
+)
+check("picture without source", mod.VVSearch._pic(event, "/tmp/a.jpg", {"detail": ""}), [("image", "/tmp/a.jpg")])
+check("picture without a hit", mod.VVSearch._pic(event, "/tmp/a.jpg", None), [("image", "/tmp/a.jpg")])
 
 sys.exit(1 if bad else 0)

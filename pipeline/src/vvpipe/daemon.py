@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import importer
+from . import importer, sources
 from .faces import FaceMatcher
 from .subtitle import Reader
 
@@ -110,6 +110,8 @@ class Daemon:
                 on_done=self.mark_done,
             )
             self.embed_vectors()
+            if self.cfg.bili:
+                sources.sync_show(self.cfg.index, self.cfg.bili)
         for job in self.pending_jobs():
             ep = int(job["ep"])
             if self.indexed(ep):
