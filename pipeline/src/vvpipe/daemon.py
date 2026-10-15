@@ -45,6 +45,7 @@ class Config:
     cookies: Path | None = None
     proxy: str | None = None
     poll: int = 30
+    embed_url: str | None = None  # embed-serve; when set, new episodes get sentence vectors
 
 
 @dataclass
@@ -69,6 +70,18 @@ class Daemon:
 
     def indexed(self, ep: int) -> bool:
         return (self.cfg.index / "entries" / f"ep{ep:04d}.jsonl").exists()
+
+    def embed_vectors(self) -> int:
+        """Give every indexed episode its sentence vectors; harmless when the service is down."""
+        if not self.cfg.embed_url:
+            return 0
+        from .embed import RemoteEmbedder, embed_missing
+
+        try:
+            return embed_missing(self.cfg.index, RemoteEmbedder(self.cfg.embed_url), log=print)
+        except Exception as err:  # noqa: BLE001 - text search keeps working without vectors
+            print(f"vectors not updated: {err}", file=sys.stderr)
+            return 0
 
     def pending_jobs(self) -> list[dict]:
         out = []
@@ -95,6 +108,7 @@ class Daemon:
                 notify=self.note,
                 on_done=self.mark_done,
             )
+            self.embed_vectors()
         for job in self.pending_jobs():
             ep = int(job["ep"])
             if self.indexed(ep):
@@ -127,6 +141,7 @@ class Daemon:
 
     def run(self) -> None:
         print("updater daemon started", file=sys.stderr, flush=True)
+        self.embed_vectors()  # catch up on episodes that arrived without vectors
         while True:
             try:
                 self.tick()

@@ -71,6 +71,21 @@ def main(argv: list[str] | None = None) -> int:
         help="proxy that reaches YouTube, e.g. socks5://127.0.0.1:1080 (default: $VV_PROXY)",
     )
     p.add_argument("--poll", type=int, default=30)
+    p.add_argument(
+        "--embed-url",
+        default=os.environ.get("VV_EMBED_URL") or None,
+        help="embed-serve address; new episodes then get sentence vectors (default: $VV_EMBED_URL)",
+    )
+
+    p = sub.add_parser("embed", help="compute sentence vectors for every indexed episode")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--model", type=Path, default=DEFAULT_MODELS / "bge")
+    p.add_argument("--threads", type=int)
+
+    p = sub.add_parser("embed-serve", help="local HTTP service that embeds search queries")
+    p.add_argument("--model", type=Path, default=DEFAULT_MODELS / "bge")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--threads", type=int)
 
     p = sub.add_parser("notify", help="send a text to the bot's admin group")
     p.add_argument("text")
@@ -78,6 +93,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--key", type=Path, required=True)
 
     args = ap.parse_args(argv)
+    if args.cmd in ("embed", "embed-serve"):
+        from . import embed as em
+
+        embedder = em.Embedder(args.model, args.threads)
+        if args.cmd == "embed":
+            print(json.dumps({"vectors_written": em.embed_missing(args.index, embedder)}))
+            return 0
+        em.serve(embedder, port=args.port)
+        return 0
     if args.cmd == "daemon":
         from .daemon import Config, Daemon
         from .weekly_fetch import make_fetcher
@@ -85,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg = Config(
             index=args.index, inbox=args.inbox, jobs=args.jobs, notify=args.notify,
             models=args.models, ref=args.ref, bili=args.bili, cookies=args.cookies,
-            proxy=args.proxy, poll=args.poll,
+            proxy=args.proxy, poll=args.poll, embed_url=args.embed_url,
         )  # fmt: skip
         Daemon(cfg, fetcher=make_fetcher(cfg)).run()
         return 0

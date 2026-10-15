@@ -9,6 +9,7 @@ dependencies = [
     "onnxruntime>=1.18",
     "rapidocr-onnxruntime>=1.3",
     "pillow>=10",
+    "tokenizers>=0.19",
     "yt-dlp[default]>=2026.1.1",
 ]
 

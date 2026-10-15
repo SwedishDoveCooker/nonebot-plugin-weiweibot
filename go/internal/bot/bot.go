@@ -20,6 +20,7 @@ import (
 	"vvbot/internal/lib"
 	"vvbot/internal/ops"
 	"vvbot/internal/qq"
+	"vvbot/internal/sem"
 )
 
 const (
@@ -30,7 +31,7 @@ const (
 )
 
 const helpText = `使用说明:
-/vv 关键字 : 返回匹配关键字的随机图片
+/vv 关键字 : 返回匹配关键字的随机图片, 没有字面匹配时会按意思找
 /r : 返回一张随机图片
 /acc 关键字 : 列出所有匹配的图片, 再发送 /acc 数字 或直接发送数字选择
 /help : 显示本说明
@@ -42,6 +43,7 @@ type Config struct {
 	EnableUpload bool // /upload is off until asked for
 	Owners       map[string]bool
 	MinSim       float64 // frames below this face similarity are only used when nothing else matches
+	SemMin       float64 // semantic matches below this cosine similarity are ignored
 }
 
 // Extras are the optional operational pieces; the bot works without them.
@@ -49,6 +51,7 @@ type Extras struct {
 	Weekly   *ops.Weekly
 	Notifier *ops.Notifier
 	Library  func() int
+	Embedder *sem.Client // turns search phrases into vectors; nil disables semantic search
 }
 
 type accState struct {
@@ -275,12 +278,54 @@ func (b *Bot) cmdVV(ctx context.Context, t qq.Target, msgID, args string) {
 		b.text(ctx, t, msgID, "请输入查询参数喵")
 		return
 	}
-	e, ok := lib.Pick(b.lib.Get().Search(args), b.cfg.MinSim)
+	res := b.lib.Get().Search(args)
+	if len(res) == 0 {
+		res = b.bySense(ctx, args, 10, 0.05) // no literal match: look for the same meaning
+	}
+	e, ok := lib.Pick(res, b.cfg.MinSim)
 	if !ok {
 		b.text(ctx, t, msgID, "not found\n请注意, 关键词中的标点符号会被忽略")
 		return
 	}
 	b.image(ctx, t, msgID, e)
+}
+
+// bySense finds lines with a similar meaning to q. Only matches scoring at least SemMin count,
+// and with window > 0 only those within window of the best one (so /vv picks among the closest).
+// Lines with identical text (the same sentence said in many episodes) are listed once.
+func (b *Bot) bySense(ctx context.Context, q string, k int, window float32) []lib.Entry {
+	l := b.lib.Get()
+	if b.x.Embedder == nil || !l.HasSemantic() {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	vec, err := b.x.Embedder.Embed(cctx, q)
+	if err != nil {
+		b.log.Warn("semantic search unavailable", "err", err)
+		return nil
+	}
+	return pickScored(l.Semantic(vec, k*4), k, float32(b.cfg.SemMin), window)
+}
+
+// pickScored keeps up to k distinct lines from best-first hits.
+func pickScored(hits []lib.Scored, k int, min, window float32) []lib.Entry {
+	var out []lib.Entry
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if h.Score < min || (window > 0 && len(hits) > 0 && h.Score < hits[0].Score-window) {
+			break
+		}
+		if seen[h.Entry.Norm] {
+			continue
+		}
+		seen[h.Entry.Norm] = true
+		out = append(out, h.Entry)
+		if len(out) == k {
+			break
+		}
+	}
+	return out
 }
 
 func (b *Bot) cmdRandom(ctx context.Context, t qq.Target, msgID string) {
@@ -312,6 +357,11 @@ func (b *Bot) cmdAcc(ctx context.Context, t qq.Target, msgID, key, args string) 
 		return
 	}
 	res := b.lib.Get().Search(args)
+	header := "匹配到多张图片, 请发送数字选择\n"
+	if len(res) == 0 {
+		res = b.bySense(ctx, args, 12, 0)
+		header = "没有字面匹配, 按意思找到这些, 请发送数字选择\n"
+	}
 	switch len(res) {
 	case 0:
 		b.text(ctx, t, msgID, "not found\n请注意, 关键词中的标点符号会被忽略")
@@ -324,7 +374,7 @@ func (b *Bot) cmdAcc(ctx context.Context, t qq.Target, msgID, key, args string) 
 		}
 		b.setAcc(key, shown)
 		var sb strings.Builder
-		sb.WriteString("匹配到多张图片, 请发送数字选择\n")
+		sb.WriteString(header)
 		for i, e := range shown {
 			fmt.Fprintf(&sb, "%d : %s\n", i+1, e.Label())
 		}

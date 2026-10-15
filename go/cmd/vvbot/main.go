@@ -23,6 +23,7 @@ import (
 	"vvbot/internal/ops"
 	"vvbot/internal/qq"
 	"vvbot/internal/sdnotify"
+	"vvbot/internal/sem"
 )
 
 func env(key, def string) string {
@@ -70,8 +71,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("VV_MIN_SIM: %w", err)
 	}
+	semMin, err := strconv.ParseFloat(env("VV_SEM_MIN", "0.66"), 64)
+	if err != nil {
+		return fmt.Errorf("VV_SEM_MIN: %w", err)
+	}
 	reload := func() {
-		var all []lib.Entry
+		// Index entries go first: the vector rows point into this slice.
+		all, vec, skipped, err := lib.LoadIndex(indexDir)
+		if err != nil {
+			log.Error("load index", "dir", indexDir, "err", err)
+			all, vec = nil, nil
+		}
+		for _, s := range skipped {
+			log.Warn("index episode skipped", "why", s)
+		}
 		for _, d := range libDirs {
 			if d = strings.TrimSpace(d); d == "" {
 				continue
@@ -83,20 +96,12 @@ func run() error {
 			}
 			all = append(all, es...)
 		}
-		if es, skipped, err := lib.LoadIndex(indexDir); err != nil {
-			log.Error("load index", "dir", indexDir, "err", err)
-		} else {
-			all = append(all, es...)
-			for _, s := range skipped {
-				log.Warn("index episode skipped", "why", s)
-			}
-		}
 		if len(all) == 0 && holder.Get().Len() > 0 {
 			log.Error("reload produced an empty library, keeping the old one")
 			return
 		}
-		holder.Set(lib.New(all))
-		log.Info("library loaded", "entries", len(all))
+		holder.Set(lib.NewWithVec(all, vec))
+		log.Info("library loaded", "entries", len(all), "vectors", vec.Rows())
 	}
 	reload()
 
@@ -121,7 +126,11 @@ func run() error {
 	b := bot.New(api, holder, bot.Config{
 		Groups: groups, UploadDir: filepath.Join(dataDir, "uploads"),
 		EnableUpload: env("VV_ENABLE_UPLOAD", "") == "1", Owners: owners, MinSim: minSim,
-	}, bot.Extras{Weekly: weekly, Notifier: notifier, Library: func() int { return holder.Get().Len() }}, log)
+		SemMin: semMin,
+	}, bot.Extras{
+		Weekly: weekly, Notifier: notifier, Library: func() int { return holder.Get().Len() },
+		Embedder: sem.New(env("VV_EMBED_URL", "http://127.0.0.1:8765")),
+	}, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
