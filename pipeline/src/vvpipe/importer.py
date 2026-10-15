@@ -7,10 +7,12 @@ from the closest Bilibili episode title. Finished videos are moved to <dir>/done
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -69,11 +71,17 @@ def import_once(
     titles: dict[int, str],
     push: Push | None = None,
     log=sys.stderr,
+    notify: Callable[[str], None] | None = None,
+    on_done: Callable[[int], None] | None = None,
 ) -> int:
-    """Process every ready video in the folder; returns how many episodes were indexed."""
+    """Process every ready video in the folder; returns how many episodes were indexed.
+
+    notify gets a short human-readable text for the admin group; on_done gets the episode number
+    once it is live (or was already live).
+    """
     done_dir = folder / "done"
     n_done = 0
-    for video in sorted(p for p in folder.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES):
+    for video in pending_videos(folder):
         if not _settled(video):
             print(f"{video.name}: still being written, later", file=log)
             continue
@@ -84,7 +92,8 @@ def import_once(
             )
             continue
         minutes = fetch.duration_seconds(video) / 60
-        if not MIN_MINUTES <= minutes <= MAX_MINUTES:
+        # VVPIPE_MIN_MINUTES lets a short clip through for an end-to-end smoke test.
+        if not float(os.environ.get("VVPIPE_MIN_MINUTES", MIN_MINUTES)) <= minutes <= MAX_MINUTES:
             print(f"{video.name}: unexpected duration {minutes:.1f} min, skipped", file=log)
             continue
         if (out_dir / "entries" / f"ep{ep:04d}.jsonl").exists():
@@ -98,11 +107,26 @@ def import_once(
                     f"{video.name}: {err}; left in the folder, replace it with a 1080p file",
                     file=log,
                 )
+                if notify:
+                    notify(f"第 {ep} 集的视频不是 1080p, 已拒绝: {video.name}")
+                video.rename(video.with_suffix(video.suffix + ".lowres"))
                 continue
             print(f"ep{ep}: done {res}", file=log)
             if push:
                 push.send(out_dir, ep)
+            if notify:
+                notify(
+                    f"第 {ep} 集已识别并上线: {res['lines']} 条字幕, "
+                    f"用时 {res['seconds'] / 60:.0f} 分钟, 图库会在 10 分钟内热重载"
+                )
             n_done += 1
         done_dir.mkdir(exist_ok=True)
         shutil.move(str(video), str(done_dir / video.name))
+        if on_done:
+            on_done(ep)
     return n_done
+
+
+def pending_videos(folder: Path) -> list[Path]:
+    """Video files waiting in the folder (not the ones set aside as low resolution)."""
+    return sorted(p for p in folder.iterdir() if p.suffix.lower() in VIDEO_SUFFIXES)

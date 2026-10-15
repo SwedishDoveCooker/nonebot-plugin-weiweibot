@@ -33,6 +33,10 @@ type Weekly struct {
 	secretsDir string
 	started    time.Time
 
+	// JobsDir is where update jobs are handed to the updater daemon. When empty the OnReady hook
+	// is used instead.
+	JobsDir string
+
 	// OnReady is called (in a goroutine) when cookies are available and an update should run.
 	// It is set by the pipeline integration; while nil the bot only collects cookies.
 	OnReady func(ctx context.Context, ep int) error
@@ -160,6 +164,11 @@ func (w *Weekly) latestEpisode(ctx context.Context) (int, string, error) {
 }
 
 func (w *Weekly) check(ctx context.Context) {
+	if w.JobsDir != "" {
+		for _, ep := range TakeDone(w.JobsDir) {
+			w.Done(ep)
+		}
+	}
 	cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 	ep, title, err := w.latestEpisode(cctx)
@@ -230,6 +239,13 @@ func (w *Weekly) startHint(ctx context.Context) string {
 }
 
 func (w *Weekly) start(ctx context.Context, ep int) string {
+	if w.JobsDir != "" {
+		title := w.st.Get().PendingTitle
+		if err := WriteJob(w.JobsDir, Job{Ep: ep, Title: title, RequestedAt: time.Now()}); err != nil {
+			return "任务提交失败: " + err.Error()
+		}
+		return fmt.Sprintf("已提交第 %d 集的更新任务, 更新程序会下载、识别并上线, 完成后在群里通知。", ep)
+	}
 	if w.OnReady == nil {
 		return fmt.Sprintf("第 %d 集的更新流水线还没接入, 先保存 cookies, 接入后会自动使用。", ep)
 	}

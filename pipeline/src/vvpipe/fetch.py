@@ -36,6 +36,7 @@ def download(
     rate: int | None = RATE_LIMIT,
     browser_profile: Path | None = None,
     player_client: str | None = None,
+    proxy: str | None = None,
 ) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     opts: dict = {
@@ -57,6 +58,8 @@ def download(
         opts["cookiefile"] = str(cookies)
     if rate:
         opts["ratelimit"] = rate
+    if proxy:
+        opts["proxy"] = proxy
     if player_client:  # e.g. web_safari still offers 1080p while the default client is downgraded
         opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
     try:

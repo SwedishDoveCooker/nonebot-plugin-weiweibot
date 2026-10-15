@@ -110,6 +110,7 @@ func run() error {
 		return fmt.Errorf("open state: %w", err)
 	}
 	weekly := ops.NewWeekly(store, notifier, filepath.Join(dataDir, "secrets"), log)
+	weekly.JobsDir = filepath.Join(dataDir, "jobs")
 
 	owners := map[string]bool{}
 	for _, o := range strings.Split(env("VV_OWNERS", ""), ",") {

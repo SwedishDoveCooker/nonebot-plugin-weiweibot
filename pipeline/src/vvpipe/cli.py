@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from . import extract as ex
@@ -56,12 +57,38 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--key", type=Path, help="ssh key for --push")
     p.add_argument("--watch", action="store_true", help="keep running and pick up new files")
 
+    p = sub.add_parser("daemon", help="run the updater next to the bot (jobs + inbox -> index)")
+    p.add_argument("--index", type=Path, required=True, help="the live index dir")
+    p.add_argument("--inbox", type=Path, required=True)
+    p.add_argument("--jobs", type=Path, required=True)
+    p.add_argument("--notify", type=Path, required=True, help="the bot's notify dir")
+    p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
+    p.add_argument("--bili", type=Path, help="episodes_bili.json, to recognise episodes by title")
+    p.add_argument("--cookies", type=Path, help="cookies saved by the bot's /auth")
+    p.add_argument(
+        "--proxy",
+        default=os.environ.get("VV_PROXY") or None,
+        help="proxy that reaches YouTube, e.g. socks5://127.0.0.1:1080 (default: $VV_PROXY)",
+    )
+    p.add_argument("--poll", type=int, default=30)
+
     p = sub.add_parser("notify", help="send a text to the bot's admin group")
     p.add_argument("text")
     p.add_argument("--push", required=True, help="user@host:/remote/index/dir (as for backfill)")
     p.add_argument("--key", type=Path, required=True)
 
     args = ap.parse_args(argv)
+    if args.cmd == "daemon":
+        from .daemon import Config, Daemon
+        from .weekly_fetch import make_fetcher
+
+        cfg = Config(
+            index=args.index, inbox=args.inbox, jobs=args.jobs, notify=args.notify,
+            models=args.models, ref=args.ref, bili=args.bili, cookies=args.cookies,
+            proxy=args.proxy, poll=args.poll,
+        )  # fmt: skip
+        Daemon(cfg, fetcher=make_fetcher(cfg)).run()
+        return 0
     if args.cmd == "notify":
         from .backfill import Push
 
