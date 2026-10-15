@@ -74,3 +74,14 @@ def test_embed_missing_covers_every_episode(tmp_path):
     _index(tmp_path, 2, ["b", "c"])
     assert embed.embed_missing(tmp_path, FakeEmbedder(), log=lambda s: None) == 3
     assert embed.embed_missing(tmp_path, FakeEmbedder(), log=lambda s: None) == 0
+
+
+def test_openai_response_shape():
+    import numpy as np
+
+    from vvpipe import embed
+
+    body = embed.openai_response(np.array([[0.5, 0.25], [1.0, 0.0]], dtype=np.float32), "m")
+    assert body["object"] == "list" and body["model"] == "m"
+    assert [d["index"] for d in body["data"]] == [0, 1]
+    assert body["data"][0]["embedding"] == [0.5, 0.25]

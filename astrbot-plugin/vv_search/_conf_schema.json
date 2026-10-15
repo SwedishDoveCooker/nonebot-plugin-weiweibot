@@ -29,5 +29,10 @@
     "description": "每个群 10 分钟内最多主动发几张图",
     "type": "int",
     "default": 10
+  },
+  "kb_embedding_provider": {
+    "description": "导入知识库用的嵌入模型提供商 ID",
+    "type": "string",
+    "default": "bge-local"
   }
 }

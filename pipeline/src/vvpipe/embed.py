@@ -114,6 +114,22 @@ def embed_missing(index_dir: Path, embedder, log=print) -> int:
     return total
 
 
+MODEL_NAME = "bge-small-zh-v1.5"
+
+
+def openai_response(vecs: np.ndarray, model: str = MODEL_NAME) -> dict:
+    """The body of an OpenAI-style /v1/embeddings reply (AstrBot's knowledge base speaks that)."""
+    return {
+        "object": "list",
+        "model": model,
+        "data": [
+            {"object": "embedding", "index": i, "embedding": np.round(v, 6).tolist()}
+            for i, v in enumerate(vecs)
+        ],
+        "usage": {"prompt_tokens": 0, "total_tokens": 0},
+    }
+
+
 def serve(embedder, host: str = "127.0.0.1", port: int = 8765) -> None:
     """A tiny local HTTP service so the Go bot can embed search queries."""
     lock = threading.Lock()
@@ -133,6 +149,8 @@ def serve(embedder, host: str = "127.0.0.1", port: int = 8765) -> None:
             )
 
         def do_POST(self):  # noqa: N802
+            if self.path == "/v1/embeddings":
+                return self._openai()
             if self.path != "/embed":
                 return self._reply(404, {})
             try:
@@ -146,6 +164,22 @@ def serve(embedder, host: str = "127.0.0.1", port: int = 8765) -> None:
             with lock:
                 vecs = embedder.encode(texts)
             self._reply(200, {"vecs": np.round(vecs, 5).tolist()})
+
+        def _openai(self) -> None:
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                texts = json.loads(self.rfile.read(min(n, 8 << 20)))["input"]
+                texts = [texts] if isinstance(texts, str) else texts
+                if not isinstance(texts, list) or not 1 <= len(texts) <= 256:
+                    raise ValueError("input must be 1..256 strings")
+                texts = [str(t)[:2000] for t in texts]
+            except (ValueError, KeyError, TypeError) as err:
+                return self._reply(400, {"error": {"message": str(err)}})
+            vecs = []
+            with lock:
+                for i in range(0, len(texts), 32):
+                    vecs.append(embedder.encode(texts[i : i + 32]))
+            self._reply(200, openai_response(np.vstack(vecs)))
 
         def log_message(self, *args):  # keep the journal quiet
             return

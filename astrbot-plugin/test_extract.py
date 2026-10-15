@@ -20,6 +20,7 @@ ev.filter = types.SimpleNamespace(
     command=lambda *a, **k: (lambda f: f),
     event_message_type=lambda *a, **k: (lambda f: f),
     llm_tool=lambda *a, **k: (lambda f: f),
+    on_astrbot_loaded=lambda *a, **k: (lambda f: f),
     EventMessageType=types.SimpleNamespace(GROUP_MESSAGE=1),
 )
 comp = types.ModuleType("astrbot.api.message_components")

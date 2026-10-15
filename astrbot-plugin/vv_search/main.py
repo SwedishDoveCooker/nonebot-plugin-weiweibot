@@ -16,6 +16,7 @@ import os
 import re
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 import aiohttp
 
@@ -26,6 +27,7 @@ from astrbot.api.star import Context, Star
 
 CONFIG = os.environ.get("VV_PLUGIN_CONFIG", "/mnt/ssd/astrbot/home/data/vv_plugin.json")
 TMP = os.environ.get("VV_TMP", "/mnt/ssd/astrbot/home/data/temp")
+KB_INBOX = Path(os.environ.get("VV_KB_INBOX", "/mnt/ssd/astrbot/home/data/kb_inbox"))
 COOLDOWN_S = 8
 ACC_TTL_S = 300
 ACC_MAX = 30
@@ -146,6 +148,7 @@ class VVSearch(Star):
         self.token = cfg.get("token", "")
         self.owners = set(cfg.get("owners", []))
         llm = cfg.get("llm") or {}
+        self.kb_embedding = settings.get("kb_embedding_provider") or "bge-local"
         self.proactive = bool(settings.get("proactive", True))
         self.mode = settings.get("mode", "agent")  # agent: the model searches and picks; judge: model names the quote
         self.min_score = float(settings.get("min_score", LLM_MIN_SCORE))
@@ -337,6 +340,80 @@ class VVSearch(Star):
         await event.send(self._pic(event, path, hits[0]))
         return f"已发送图片: {hits[0]['text']}"
 
+    # ---- knowledge base inbox ------------------------------------------------------------
+    @filter.on_astrbot_loaded()
+    async def on_loaded(self):
+        """Documents dropped into kb_inbox/<knowledge base>/*.json are imported once, at start."""
+        if KB_INBOX.is_dir():
+            asyncio.create_task(self._import_kb_inbox())  # noqa: RUF006 - runs next to the bot
+
+    async def _kb_lookup(self, query: str, top: int = 3) -> str:
+        """The passages of every knowledge base the chat uses that best match ``query``."""
+        res = await self.context.kb_manager.retrieve(
+            query=query, kb_names=self.kb_names(), top_k_fusion=20, top_m_final=top
+        )
+        if not res or not res.get("results"):
+            return "(没有相关内容)"
+        return "\n\n".join(
+            f"[{r['score']:.2f}] {r['content'][:260]}" for r in res["results"]
+        )
+
+    def kb_names(self) -> list[str]:
+        return list(self.context.get_config().get("kb_names") or [])
+
+    async def _import_kb_inbox(self) -> None:
+        """Each file is {"file_name": "...", "chunks": ["passage", ...]}; done ones move to done/."""
+        mgr = self.context.kb_manager
+        for kb_dir in sorted(p for p in KB_INBOX.iterdir() if p.is_dir() and p.name != "done"):
+            files = sorted(kb_dir.glob("*.json"))
+            if not files:
+                continue
+            try:
+                kb = await mgr.get_kb_by_name(kb_dir.name)
+                if kb is None:
+                    kb = await mgr.create_kb(
+                        kb_dir.name,
+                        description="meme and slang notes",
+                        emoji="📚",
+                        embedding_provider_id=self.kb_embedding,
+                        chunk_size=512,
+                        chunk_overlap=0,
+                        top_k_dense=20,
+                        top_k_sparse=20,
+                        top_m_final=5,
+                    )
+                    logger.info(f"vv_search: created knowledge base {kb_dir.name!r}")
+                for f in files:
+                    doc = json.loads(f.read_text("utf-8"))
+                    chunks = [c for c in doc["chunks"] if c.strip()]
+                    known = await kb.list_documents(search=doc["file_name"])
+                    if any(getattr(d, "doc_name", None) == doc["file_name"] for d in known):
+                        logger.info(f"vv_search: {doc['file_name']!r} is already in the knowledge base")
+                    else:
+                        await kb.upload_document(
+                            file_name=doc["file_name"],
+                            file_content="\n\n".join(chunks).encode("utf-8"),
+                            file_type="md",
+                            chunk_size=512,
+                            chunk_overlap=0,
+                            batch_size=16,
+                            pre_chunked_text=chunks,
+                        )
+                    done = KB_INBOX / "done" / kb_dir.name
+                    done.mkdir(parents=True, exist_ok=True)
+                    f.replace(done / f.name)
+                    logger.info(f"vv_search: imported {doc['file_name']!r}: {len(chunks)} passages")
+            except Exception as err:  # noqa: BLE001 - a failed import must not break the bot
+                logger.error(f"vv_search: knowledge base import failed for {kb_dir.name!r}: {err!r}")
+        probe = KB_INBOX / "selftest.txt"  # one query per line; the answers go to the log
+        if probe.is_file():
+            for q in probe.read_text("utf-8").splitlines():
+                if q.strip():
+                    try:
+                        logger.info(f"vv_search: kb selftest {q!r} ->\n{await self._kb_lookup(q.strip())}")
+                    except Exception as err:  # noqa: BLE001
+                        logger.error(f"vv_search: kb selftest {q!r} failed: {err!r}")
+            probe.replace(probe.with_suffix(".done"))
     # ---- commands ------------------------------------------------------------------------
     @filter.command("help")
     async def help(self, event: AstrMessageEvent):
@@ -452,6 +529,15 @@ class VVSearch(Star):
             if not sent:
                 yield event.plain_result("(模型决定不发图)")
         event.stop_event()
+    @filter.command("kb")
+    async def kb_cmd(self, event: AstrMessageEvent):
+        """/kb 问题: what the knowledge base would tell the model (owner only, for checking)."""
+        if self._is_owner(event):
+            text = rest(event.message_str, "kb")
+            if text:
+                yield event.plain_result(await self._kb_lookup(text))
+        event.stop_event()
+
     @filter.command("status")
     async def status(self, event: AstrMessageEvent):
         """/status"""
