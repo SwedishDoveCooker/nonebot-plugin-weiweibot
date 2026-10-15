@@ -347,7 +347,7 @@ class VVSearch(Star):
         if KB_INBOX.is_dir():
             asyncio.create_task(self._import_kb_inbox())  # noqa: RUF006 - runs next to the bot
 
-    async def _kb_lookup(self, query: str, top: int = 3) -> str:
+    async def _kb_lookup(self, query: str, top: int = 3, limit: int = 260) -> str:
         """The passages of every knowledge base the chat uses that best match ``query``."""
         res = await self.context.kb_manager.retrieve(
             query=query, kb_names=self.kb_names(), top_k_fusion=20, top_m_final=top
@@ -355,7 +355,7 @@ class VVSearch(Star):
         if not res or not res.get("results"):
             return "(没有相关内容)"
         return "\n\n".join(
-            f"[{r['score']:.2f}] {r['content'][:260]}" for r in res["results"]
+            f"[{r['score']:.2f}] {r['content'][:limit]}" for r in res["results"]
         )
 
     def kb_names(self) -> list[str]:
@@ -405,15 +405,33 @@ class VVSearch(Star):
                     logger.info(f"vv_search: imported {doc['file_name']!r}: {len(chunks)} passages")
             except Exception as err:  # noqa: BLE001 - a failed import must not break the bot
                 logger.error(f"vv_search: knowledge base import failed for {kb_dir.name!r}: {err!r}")
-        probe = KB_INBOX / "selftest.txt"  # one query per line; the answers go to the log
+        probe = KB_INBOX / "selftest.txt"
         if probe.is_file():
-            for q in probe.read_text("utf-8").splitlines():
-                if q.strip():
-                    try:
-                        logger.info(f"vv_search: kb selftest {q!r} ->\n{await self._kb_lookup(q.strip())}")
-                    except Exception as err:  # noqa: BLE001
-                        logger.error(f"vv_search: kb selftest {q!r} failed: {err!r}")
-            probe.replace(probe.with_suffix(".done"))
+            await self._kb_selftest(probe)
+
+    async def _kb_selftest(self, probe: Path) -> None:
+        """Lines are "query" or "query<TAB>text the top 3 must contain"; results go to the log."""
+        total = passed = 0
+        for line in probe.read_text("utf-8").splitlines():
+            query, _, want = line.partition("\t")
+            if not query.strip():
+                continue
+            try:
+                got = await self._kb_lookup(query.strip(), top=3, limit=3000)
+            except Exception as err:  # noqa: BLE001
+                logger.error(f"vv_search: kb selftest {query!r} failed: {err!r}")
+                continue
+            if want.strip():
+                total += 1
+                ok = want.strip() in got
+                passed += ok
+                logger.info(f"vv_search: kb selftest {'PASS' if ok else 'FAIL'} {query!r}")
+            else:
+                logger.info(f"vv_search: kb selftest {query!r} ->\n{got[:600]}")
+        if total:
+            logger.info(f"vv_search: kb selftest RESULT {passed}/{total} in the top 3")
+        probe.replace(probe.with_suffix(".done"))
+
     # ---- commands ------------------------------------------------------------------------
     @filter.command("help")
     async def help(self, event: AstrMessageEvent):

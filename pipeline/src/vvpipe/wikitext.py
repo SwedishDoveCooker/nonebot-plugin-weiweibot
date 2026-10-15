@@ -129,3 +129,50 @@ def chunks(title: str, text: str, max_chars: int = 480) -> list[str]:
         size += len(line) + 1
     flush()
     return [c for c in out if len(c.split("\n", 1)[-1].strip()) >= 4]
+
+
+def _cut(line: str, max_chars: int) -> list[str]:
+    """Pieces of at most ``max_chars``, cut at a sentence end when there is one."""
+    pieces = []
+    while len(line) > max_chars:
+        cut = max(line.rfind(c, 0, max_chars) for c in "。！？；")
+        cut = cut + 1 if cut > max_chars // 3 else max_chars
+        pieces.append(line[:cut])
+        line = line[cut:]
+    return [*pieces, line] if line else pieces
+
+
+def entries(title: str, text: str, max_chars: int = 480, merge_below: int = 120) -> list[str]:
+    """Passages for retrieval, one per entry: the name of a slang term stays the first words.
+
+    Every list item (and every paragraph) is an entry; entries shorter than ``merge_below``
+    are joined with the ones after them in the same section, up to ``max_chars``. A passage
+    starts with "《title》 > section path", so it still says what it is about on its own.
+    """
+    out: list[str] = []
+    path: list[str] = []
+    buf = ""
+
+    def flush() -> None:
+        nonlocal buf
+        if buf.strip():
+            where = " > ".join(path)
+            out.append(f"《{title}》" + (f" > {where}" if where else "") + "\n" + buf.strip())
+        buf = ""
+
+    for line in text.splitlines():
+        if m := re.match(r"^(#{2,6}) (.*)$", line):
+            flush()
+            path[:] = [*path[: len(m.group(1)) - 2], m.group(2).strip()]
+            continue
+        item = re.sub(r"^- ", "", line.strip())
+        if not item:
+            continue
+        for piece in _cut(item, max_chars):
+            if buf and len(buf) + len(piece) + 1 > max_chars:
+                flush()
+            buf = f"{buf}\n{piece}" if buf else piece
+            if len(buf) >= merge_below:
+                flush()
+    flush()
+    return [c for c in out if len(c.split("\n", 1)[-1].strip()) >= 4]
