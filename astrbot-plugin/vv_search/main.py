@@ -25,7 +25,7 @@ from astrbot.api.star import Context, Star
 
 CONFIG = os.environ.get("VV_PLUGIN_CONFIG", "/mnt/ssd/astrbot/home/data/vv_plugin.json")
 TMP = os.environ.get("VV_TMP", "/mnt/ssd/astrbot/home/data/temp")
-COOLDOWN_S = 20
+COOLDOWN_S = 8
 ACC_TTL_S = 300
 ACC_MAX = 30
 
@@ -47,12 +47,18 @@ SYS_ASK = (
     "例:\n甲: 有没有群友有那个\n→无\n"
     "例:\n甲: 今天中午吃啥\n→无"
 )
-LLM_MIN_SCORE = 0.7  # a guess from the model needs a clearly matching picture before it speaks
-LLM_PER_MIN = 12
+SYS_AGENT = (
+    "你是QQ群里的一个机器人,平时只旁观。下面是群里最近的聊天记录(旧→新)。\n"
+    "只有当最新的消息之后,群友在向大家要某句台词或某个梗的表情包/图片时(要的内容可能分几条消息说完),"
+    "你才出手:先用 find_meme 按台词搜索,看候选,挑最贴切的用 send_meme 发出;候选都不贴切就什么也别发。\n"
+    "其他任何情况(闲聊、讨论、只是提到图、话没说完)都不要调用工具,只回复 无。"
+)
+LLM_MIN_SCORE = 0.6  # a guess from the model needs a clearly matching picture before it speaks
+LLM_PER_MIN = 30
 REPLY_WINDOW_S = 600  # at most REPLY_MAX unsolicited pictures per group in this window
-REPLY_MAX = 5
+REPLY_MAX = 10
 LLM_TIMEOUT_S = 60
-CONTEXT_LINES = 6  # recent messages shown to the model, so a request can span several messages
+CONTEXT_LINES = 10  # recent messages shown to the model, so a request can span several messages
 CONTEXT_TTL_S = 120
 LABELS = "甲乙丙丁戊己庚辛"
 
@@ -140,11 +146,13 @@ class VVSearch(Star):
         self.owners = set(cfg.get("owners", []))
         llm = cfg.get("llm") or {}
         self.proactive = bool(settings.get("proactive", True))
+        self.mode = settings.get("mode", "agent")  # agent: the model searches and picks; judge: model names the quote
         self.min_score = float(settings.get("min_score", LLM_MIN_SCORE))
         self.reply_cap = int(settings.get("replies_per_10min", REPLY_MAX))
         local_url = settings.get("local_url") or llm.get("url")
         local = Judge(local_url, llm.get("model", "local")) if local_url else None
         pid = settings.get("provider_id") or llm.get("provider_id")
+        self.provider_id = pid
         self.judge = AstrJudge(context, pid, fallback=local) if pid else local
         self._llm_calls: dict[str, deque[float]] = defaultdict(deque)
         self._replies: dict[str, deque[float]] = defaultdict(deque)
@@ -209,6 +217,83 @@ class VVSearch(Star):
             sent.popleft()
         return len(sent) >= self.reply_cap
 
+    async def _run_agent(self, event: AstrMessageEvent, gid: str, lines: list[str]) -> bool:
+        """Let the model run the whole thing: decide, search, pick a picture, send it."""
+        from astrbot.core.agent.tool import FunctionTool, ToolSet
+
+        now = time.time()
+        if now - self._last.get(gid, 0) < COOLDOWN_S:
+            return False
+        calls = self._llm_calls[gid]
+        while calls and now - calls[0] > 60:
+            calls.popleft()
+        if len(calls) >= LLM_PER_MIN:
+            return False
+        calls.append(now)
+
+        cands: dict[int, dict] = {}
+        sent: list[dict] = []
+
+        async def find_meme(ev, query: str):
+            hits = await self._json("/api/search", q=str(query)[:60], k=5) or []
+            cands.clear()
+            cands.update({i + 1: h for i, h in enumerate(hits)})
+            if not cands:
+                return "没有找到匹配的图片"
+            return "\n".join(
+                f"{i}. {h['text']} ({'字面匹配' if h['source'] == 'literal' else '相似度%.2f' % h['score']})"
+                for i, h in cands.items()
+            )
+
+        async def send_meme(ev, choice: int):
+            hit = cands.get(int(choice))
+            if hit is None or sent:
+                return "没有这个编号, 或者已经发过了"
+            path = await self._image_path(hit["key"])
+            if not path:
+                return "图片发送失败"
+            await ev.send(ev.image_result(path))
+            sent.append(hit)
+            self._last[gid] = time.time()
+            self._replies[gid].append(time.time())
+            return "已发送"
+
+        obj = {"type": "object", "properties": {}, "required": []}
+        tools = ToolSet(
+            tools=[
+                FunctionTool(
+                    name="find_meme",
+                    description="按台词原文搜索《这就是中国》的图片, 返回编号候选",
+                    parameters={**obj, "properties": {"query": {"type": "string", "description": "想找的那句台词"}}, "required": ["query"]},
+                    handler=find_meme,
+                ),
+                FunctionTool(
+                    name="send_meme",
+                    description="把 find_meme 返回的某个编号的图片发到群里",
+                    parameters={**obj, "properties": {"choice": {"type": "integer", "description": "候选编号"}}, "required": ["choice"]},
+                    handler=send_meme,
+                ),
+            ]
+        )
+        try:
+            await asyncio.wait_for(
+                self.context.tool_loop_agent(
+                    event=event,
+                    chat_provider_id=self.provider_id,
+                    prompt="\n".join(lines) + "\n→",
+                    system_prompt=SYS_AGENT,
+                    tools=tools,
+                    max_steps=4,
+                ),
+                LLM_TIMEOUT_S,
+            )
+        except Exception as err:  # noqa: BLE001 - never break the bot over a failed model call
+            logger.warning(f"vv_search: agent failed: {err!r}")
+            return False
+        if sent:
+            self._log[gid] = []
+            logger.info(f"vv_search agent sent {sent[0]['text']!r} ({sent[0]['source']}, {sent[0]['score']:.2f})")
+        return bool(sent)
     async def _ask_model(self, gid: str, lines: list[str]) -> str | None:
         """Let the local model decide whether the group is asking for a picture (rate limited)."""
         now = time.time()
@@ -347,6 +432,17 @@ class VVSearch(Star):
         except Exception as err:  # noqa: BLE001
             yield event.plain_result(f"模型调用失败: {err!r}"[:300])
         event.stop_event()
+    @filter.command("agent")
+    async def agent_cmd(self, event: AstrMessageEvent):
+        """/agent 一句话: run the agent on one message as if a friend said it (owner only)."""
+        if not self._is_owner(event) or not self.provider_id:
+            return
+        text = rest(event.message_str, "agent")
+        if text:
+            sent = await self._run_agent(event, "dbg|" + str(event.get_group_id()), [f"甲: {text}"])
+            if not sent:
+                yield event.plain_result("(模型决定不发图)")
+        event.stop_event()
     @filter.command("status")
     async def status(self, event: AstrMessageEvent):
         """/status"""
@@ -370,7 +466,11 @@ class VVSearch(Star):
         gid = event.get_group_id() or event.get_sender_id()
         if self._reply_capped(gid):
             return
-        query = await self._ask_model(gid, self._remember(gid, event.get_sender_id(), text))
+        lines = self._remember(gid, event.get_sender_id(), text)
+        if self.mode == "agent" and self.provider_id:
+            await self._run_agent(event, gid, lines)  # the tool sends the picture itself
+            return
+        query = await self._ask_model(gid, lines)
         if query is None or self._cooling(event):
             return
         self._log[gid] = []  # this request is being answered, do not answer it again

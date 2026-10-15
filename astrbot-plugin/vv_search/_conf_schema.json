@@ -1,4 +1,10 @@
 {
+  "mode": {
+    "description": "agent: 模型自己判断、搜索、挑图并发送(需要支持工具调用的模型); judge: 模型只说出台词, 由插件搜",
+    "type": "string",
+    "options": ["agent", "judge"],
+    "default": "agent"
+  },
   "proactive": {
     "description": "群里有人要表情包时主动回复",
     "type": "bool",
@@ -17,11 +23,11 @@
   "min_score": {
     "description": "模型猜出台词后, 图的语义相似度至少多少才发 (字面匹配不受限)",
     "type": "float",
-    "default": 0.7
+    "default": 0.6
   },
   "replies_per_10min": {
     "description": "每个群 10 分钟内最多主动发几张图",
     "type": "int",
-    "default": 5
+    "default": 10
   }
 }
