@@ -1,7 +1,7 @@
 [Unit]
 Description=VV updater daemon (jobs + inbox -> index)
-After=network-online.target vvbot.service
-Wants=network-online.target
+After=network-online.target vvbot.service xray.service
+Wants=network-online.target xray.service
 RequiresMountsFor=/mnt/ssd
 StartLimitIntervalSec=0
 

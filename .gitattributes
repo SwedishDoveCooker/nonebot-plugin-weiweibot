@@ -1,1 +1,5 @@
 *.tar.gz filter=lfs diff=lfs merge=lfs -text
+
+*.sh text eol=lf
+*.service text eol=lf
+deploy/bin/* text eol=lf

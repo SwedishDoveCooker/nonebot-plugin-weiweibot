@@ -51,8 +51,13 @@ state/state.json             B 站最新一集、待更新、提醒次数、心�
 1. B 站每周二约 10:00 更新, `vvbot-ops` 每 10 分钟检查, 发现新一集 → 在管理群提醒(最多 3 次)。
 2. 车主发 `/go`(或先 `/auth` + Cookie) → 写任务单。
 3. 更新程序拿到视频后识别约 40 分钟(armbian CPU), 完成后群里通知; 图库 10 分钟内热重载。
-4. **下载这一步在这两台机器上还没打通**(它们连不上 YouTube): 目前由人把 1080p 视频放进 `inbox/`。
-   代码已写好(`weekly_fetch.py`), 配置了 cookies 和能到 YouTube 的代理(`VV_PROXY`)后才会启用, 尚未实测。
+4. 下载走本地 SOCKS 代理: armbian 直连 YouTube 不通(GitHub Actions / Worker / Vercel / WARP 也都不行,
+   机房 IP 被拦, WARP 的 UDP 出不去)。用户自己的 VLESS+Reality 节点由 Xray 在 `127.0.0.1:10808` 提供。
+   - 节点参数放 `/mnt/ssd/xray/node.env`(600, 不进 git; `deploy/bin/v2rayn_to_env.py` 可从 v2rayN 配置生成)。
+   - `deploy/bin/setup-xray.sh` 下载 Xray、渲染 `config.json`、启用 `xray.service`、在 `daemon.env` 写 `VV_PROXY`。
+   - 更新程序在有 cookies 和 `VV_PROXY` 时才启用 `weekly_fetch.py`, 被 YouTube 拦住时每 30 分钟重试,
+     没配置时退回"把视频放进 `inbox/`"。
+   - 状态: 配置框架已就绪, 尚未在 armbian 上安装和实测(批量任务一直通过同一节点在电脑上下载)。
 
 ## 视频质量
 

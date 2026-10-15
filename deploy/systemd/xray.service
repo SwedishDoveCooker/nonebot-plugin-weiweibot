@@ -1,0 +1,22 @@
+[Unit]
+Description=Xray SOCKS proxy to YouTube (VLESS Reality), 127.0.0.1 only
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/ssd
+StartLimitIntervalSec=0
+ConditionPathExists=/mnt/ssd/xray/config.json
+
+[Service]
+User=vvbot
+Group=vvbot
+ExecStart=/mnt/ssd/xray/xray run -c /mnt/ssd/xray/config.json
+Environment=XRAY_LOCATION_ASSET=/mnt/ssd/xray
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
