@@ -86,9 +86,12 @@ def embed_episode(index_dir: Path, ep: int, embedder, force: bool = False) -> in
     """Write the vectors of one indexed episode; returns the number of lines embedded."""
     idx = index_dir / "entries" / f"ep{ep:04d}.jsonl"
     out = vectors_path(index_dir, ep)
-    rows = [json.loads(line) for line in idx.read_text("utf-8").splitlines() if line.strip()]
-    if out.exists() and not force and out.stat().st_size == len(rows) * DIM * 2:
+    raw = idx.read_bytes()
+    # Cheap completeness check first: counting lines avoids parsing 350 files every few minutes.
+    n_lines = sum(1 for line in raw.split(b"\n") if line.strip())
+    if out.exists() and not force and out.stat().st_size == n_lines * DIM * 2:
         return 0
+    rows = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
     vecs = embedder.encode([r["text"] for r in rows])
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".f16.tmp")

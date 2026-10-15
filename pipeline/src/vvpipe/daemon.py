@@ -21,6 +21,7 @@ from .faces import FaceMatcher
 from .subtitle import Reader
 
 FETCH_RETRY_SECONDS = 30 * 60
+EMBED_RETRY_SECONDS = 10 * 60
 _JOB = re.compile(r"^ep(\d{4})\.json$")
 
 
@@ -141,10 +142,15 @@ class Daemon:
 
     def run(self) -> None:
         print("updater daemon started", file=sys.stderr, flush=True)
-        self.embed_vectors()  # catch up on episodes that arrived without vectors
+        next_embed = 0.0
         while True:
             try:
                 self.tick()
+                # Episodes can arrive without vectors (the service was still loading at boot, or
+                # they were copied in from another machine): look again every few minutes.
+                if time.time() >= next_embed:
+                    self.embed_vectors()
+                    next_embed = time.time() + EMBED_RETRY_SECONDS
             except Exception as err:  # noqa: BLE001 - never let one bad round kill the service
                 print(f"tick failed: {err!r}", file=sys.stderr, flush=True)
             time.sleep(self.cfg.poll)

@@ -74,6 +74,11 @@ func (w *Weekly) Run(ctx context.Context) {
 	poll := time.NewTicker(pollEvery)
 	defer hb.Stop()
 	defer poll.Stop()
+	select { // right after boot the network is often not usable yet
+	case <-ctx.Done():
+		return
+	case <-time.After(20 * time.Second):
+	}
 	w.check(ctx)
 	for {
 		select {
