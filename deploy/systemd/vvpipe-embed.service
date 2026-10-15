@@ -1,0 +1,26 @@
+[Unit]
+Description=VV sentence embedding service (bge-small-zh, local only)
+After=network.target
+RequiresMountsFor=/mnt/ssd
+StartLimitIntervalSec=0
+
+[Service]
+User=vvbot
+Group=vvbot
+WorkingDirectory=/mnt/ssd/vvbot/pipeline
+Environment=XDG_CACHE_HOME=/mnt/ssd/vvbot/cache
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=2
+ExecStart=/mnt/ssd/vvbot/pipeline/.venv/bin/vvpipe embed-serve --model /mnt/ssd/vvbot/pipeline/models/bge --port 8765 --threads 2
+Restart=always
+RestartSec=5
+Nice=5
+MemoryMax=900M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/mnt/ssd/vvbot/cache
+
+[Install]
+WantedBy=multi-user.target

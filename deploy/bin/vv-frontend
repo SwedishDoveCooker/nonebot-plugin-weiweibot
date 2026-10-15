@@ -1,0 +1,7 @@
+#!/bin/bash
+# vv-frontend go|astrbot|status : which program holds the QQ connection (never both)
+case "$1" in
+  go)      systemctl start vvbot ;;
+  astrbot) systemctl start astrbot ;;
+esac
+for s in vvbot astrbot; do printf '%-8s %s\n' "$s" "$(systemctl is-active $s)"; done

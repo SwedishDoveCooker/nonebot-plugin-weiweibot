@@ -1,0 +1,34 @@
+[Unit]
+Description=VV updater daemon (jobs + inbox -> index)
+After=network-online.target vvbot.service
+Wants=network-online.target
+RequiresMountsFor=/mnt/ssd
+StartLimitIntervalSec=0
+
+[Service]
+User=vvbot
+Group=vvbot
+WorkingDirectory=/mnt/ssd/vvbot/pipeline
+Environment=XDG_CACHE_HOME=/mnt/ssd/vvbot/cache
+Environment=PYTHONUNBUFFERED=1
+Environment=VV_EMBED_URL=http://127.0.0.1:8765
+EnvironmentFile=-/mnt/ssd/vvbot/daemon.env
+ExecStart=/mnt/ssd/vvbot/pipeline/.venv/bin/vvpipe daemon \
+  --index /mnt/ssd/vvbot/data/index \
+  --inbox /mnt/ssd/vvbot/data/inbox \
+  --jobs /mnt/ssd/vvbot/data/jobs \
+  --notify /mnt/ssd/vvbot/data/notify \
+  --bili /mnt/ssd/vvbot/data/episodes_bili.json \
+  --cookies /mnt/ssd/vvbot/data/secrets/yt_cookies.txt
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/mnt/ssd/vvbot/data /mnt/ssd/vvbot/cache
+
+[Install]
+WantedBy=multi-user.target

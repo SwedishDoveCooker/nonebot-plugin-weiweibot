@@ -1,0 +1,30 @@
+[Unit]
+Description=VV QQ bot
+After=network-online.target time-sync.target
+Conflicts=astrbot.service vvbot-ops.service vvbot-search.service
+Wants=network-online.target
+RequiresMountsFor=/mnt/ssd
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=vvbot
+Group=vvbot
+EnvironmentFile=/mnt/ssd/vvbot/.env
+Environment=VV_DATA_DIR=/mnt/ssd/vvbot/data
+Environment=VV_API_ADDR=127.0.0.1:8770
+Environment=VV_LOG_FILE=/mnt/ssd/vvbot/logs/vvbot.log
+ExecStart=/mnt/ssd/vvbot/bin/vvbot
+Restart=always
+RestartSec=5
+WatchdogSec=180
+TimeoutStartSec=120
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/mnt/ssd/vvbot/data /mnt/ssd/vvbot/logs
+
+[Install]
+WantedBy=multi-user.target

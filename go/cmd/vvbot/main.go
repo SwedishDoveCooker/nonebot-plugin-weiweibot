@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,8 +19,10 @@ import (
 
 	"gopkg.in/natefinch/lumberjack.v2"
 
+	vvapi "vvbot/internal/api"
 	"vvbot/internal/bot"
 	"vvbot/internal/lib"
+	"vvbot/internal/llm"
 	"vvbot/internal/ops"
 	"vvbot/internal/qq"
 	"vvbot/internal/sdnotify"
@@ -42,7 +45,7 @@ func main() {
 
 func run() error {
 	appID, secret := env("QQ_APPID", ""), env("QQ_SECRET", "")
-	if appID == "" || secret == "" {
+	if (appID == "" || secret == "") && env("VV_MODE", "bot") != "search" {
 		return fmt.Errorf("QQ_APPID and QQ_SECRET are required")
 	}
 	dataDir := env("VV_DATA_DIR", "/mnt/ssd/vvbot/data")
@@ -117,6 +120,18 @@ func run() error {
 	weekly := ops.NewWeekly(store, notifier, filepath.Join(dataDir, "secrets"), log)
 	weekly.JobsDir = filepath.Join(dataDir, "jobs")
 
+	// Groups where the bot may answer picture requests without being addressed ("*" = every group).
+	proactiveGroups, proactiveAll := map[string]bool{}, false
+	for _, g := range strings.Split(env("VV_PROACTIVE_GROUPS", ""), ",") {
+		switch g = strings.TrimSpace(g); g {
+		case "":
+		case "*":
+			proactiveAll = true
+		default:
+			proactiveGroups[g] = true
+		}
+	}
+
 	owners := map[string]bool{}
 	for _, o := range strings.Split(env("VV_OWNERS", ""), ",") {
 		if o = strings.TrimSpace(o); o != "" {
@@ -126,14 +141,73 @@ func run() error {
 	b := bot.New(api, holder, bot.Config{
 		Groups: groups, UploadDir: filepath.Join(dataDir, "uploads"),
 		EnableUpload: env("VV_ENABLE_UPLOAD", "") == "1", Owners: owners, MinSim: minSim,
-		SemMin: semMin,
+		SemMin: semMin, Proactive: proactiveGroups, ProactiveAll: proactiveAll,
 	}, bot.Extras{
 		Weekly: weekly, Notifier: notifier, Library: func() int { return holder.Get().Len() },
 		Embedder: sem.New(env("VV_EMBED_URL", "http://127.0.0.1:8765")),
+		LLM:      llm.New(env("VV_LLM_URL", ""), env("VV_LLM_KEY", ""), env("VV_LLM_MODEL", "default"), 20*time.Second),
 	}, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Pick up library changes (weekly index updates) without restarting.
+	go func() {
+		every, _ := strconv.Atoi(env("VV_RELOAD_MINUTES", "10"))
+		t := time.NewTicker(time.Duration(every) * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				reload()
+			}
+		}
+	}()
+
+	// The local HTTP interface for other programs. VV_MODE selects what runs:
+	//   bot    (default) the QQ gateway plus the weekly watcher and notifications
+	//   ops    everything except the QQ gateway: for when another program (AstrBot) holds the connection
+	//   search only the picture API, no QQ and no state
+	mode := env("VV_MODE", "bot")
+	apiAddr := env("VV_API_ADDR", "")
+	if (mode == "search" || mode == "ops") && apiAddr == "" {
+		apiAddr = "127.0.0.1:8770"
+	}
+	if apiAddr != "" {
+		var owner vvapi.Owner
+		if mode != "search" {
+			owner = ownerAPI{w: weekly, lib: func() int { return holder.Get().Len() }}
+		}
+		handler := vvapi.Handler(b, owner, strings.TrimSpace(env("VV_API_TOKEN", "")))
+		srv := &http.Server{Addr: apiAddr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("api server", "addr", apiAddr, "err", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			sc, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(sc)
+		}()
+		log.Info("api listening", "addr", apiAddr)
+	}
+	if mode == "search" || mode == "ops" {
+		if mode == "ops" {
+			go weekly.Start(ctx)
+			go weekly.Run(ctx)
+			go notifier.WatchDropbox(ctx, filepath.Join(dataDir, "notify"), log)
+		}
+		sdnotify.Send("READY=1")
+		<-ctx.Done()
+		if mode == "ops" {
+			weekly.MarkClean()
+		}
+		return nil
+	}
 
 	var once sync.Once
 	gw := qq.NewGateway(api, ts, qq.IntentGroupAndC2C, b.HandleEvent, func() {
@@ -162,21 +236,6 @@ func run() error {
 			}
 		}()
 	}
-
-	// Pick up library changes (weekly index updates) without restarting.
-	go func() {
-		every, _ := strconv.Atoi(env("VV_RELOAD_MINUTES", "10"))
-		t := time.NewTicker(time.Duration(every) * time.Minute)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				reload()
-			}
-		}
-	}()
 
 	log.Info("vvbot starting", "appid", appID, "data", dataDir, "groups", len(groups))
 	gw.Run(ctx)

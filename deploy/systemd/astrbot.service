@@ -1,0 +1,22 @@
+[Unit]
+Description=AstrBot (QQ front-end for the VV bot)
+After=network-online.target vvbot-ops.service
+Requires=vvbot-ops.service
+Conflicts=vvbot.service
+RequiresMountsFor=/mnt/ssd
+StartLimitIntervalSec=0
+
+[Service]
+User=astrbot
+Group=astrbot
+WorkingDirectory=/mnt/ssd/astrbot/home
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/mnt/ssd/astrbot/bin/astrbot run
+Restart=always
+RestartSec=10
+Nice=5
+MemoryMax=1300M
+NoNewPrivileges=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

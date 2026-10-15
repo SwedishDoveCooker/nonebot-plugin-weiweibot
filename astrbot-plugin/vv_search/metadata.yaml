@@ -1,0 +1,5 @@
+name: vv_search
+desc: Reply with a picture from the VV library when a group asks for a meme (local search API)
+version: 0.1.0
+author: vv
+repo: https://github.com/SwedishDoveCooker/nonebot-plugin-weiweibot

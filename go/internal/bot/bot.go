@@ -17,8 +17,11 @@ import (
 	"sync"
 	"time"
 
+	"vvbot/internal/api"
 	"vvbot/internal/lib"
+	"vvbot/internal/llm"
 	"vvbot/internal/ops"
+	"vvbot/internal/proactive"
 	"vvbot/internal/qq"
 	"vvbot/internal/sem"
 )
@@ -44,6 +47,11 @@ type Config struct {
 	Owners       map[string]bool
 	MinSim       float64 // frames below this face similarity are only used when nothing else matches
 	SemMin       float64 // semantic matches below this cosine similarity are ignored
+
+	// Proactive replies in groups that did not address the bot. Off unless a group is listed
+	// (or ProactiveAll is set).
+	Proactive    map[string]bool
+	ProactiveAll bool
 }
 
 // Extras are the optional operational pieces; the bot works without them.
@@ -52,6 +60,7 @@ type Extras struct {
 	Notifier *ops.Notifier
 	Library  func() int
 	Embedder *sem.Client // turns search phrases into vectors; nil disables semantic search
+	LLM      *llm.Client // optional: extracts the phrase when the rules cannot; nil means rules only
 }
 
 type accState struct {
@@ -66,6 +75,7 @@ type Bot struct {
 	log  *slog.Logger
 	http *http.Client
 	x    Extras
+	gate *proactive.Gate
 
 	mu       sync.Mutex
 	seen     map[string]time.Time
@@ -75,7 +85,7 @@ type Bot struct {
 
 func New(api *qq.Client, h *lib.Holder, cfg Config, x Extras, log *slog.Logger) *Bot {
 	return &Bot{
-		api: api, lib: h, cfg: cfg, log: log, x: x,
+		api: api, lib: h, cfg: cfg, log: log, x: x, gate: proactive.NewGate(),
 		http:     &http.Client{Timeout: 30 * time.Second},
 		seen:     map[string]time.Time{},
 		acc:      map[string]accState{},
@@ -114,7 +124,10 @@ func (b *Bot) HandleEvent(ctx context.Context, typ string, raw json.RawMessage) 
 	case isNumber(text) && b.hasAcc(key):
 		cmd, args = "acc", text
 	default:
-		return // not for us
+		if tgt.Group {
+			b.maybeProactive(ctx, tgt, m.ID, text)
+		}
+		return // not a command
 	}
 	if b.throttled(sender) {
 		return
@@ -311,6 +324,15 @@ func (b *Bot) bySense(ctx context.Context, q string, k int, window float32) []li
 // pickScored keeps up to k distinct lines from best-first hits.
 func pickScored(hits []lib.Scored, k int, min, window float32) []lib.Entry {
 	var out []lib.Entry
+	for _, h := range pickScoredHits(hits, k, min, window) {
+		out = append(out, h.Entry)
+	}
+	return out
+}
+
+// pickScoredHits is pickScored that keeps the scores.
+func pickScoredHits(hits []lib.Scored, k int, min, window float32) []lib.Scored {
+	var out []lib.Scored
 	seen := map[string]bool{}
 	for _, h := range hits {
 		if h.Score < min || (window > 0 && len(hits) > 0 && h.Score < hits[0].Score-window) {
@@ -320,13 +342,153 @@ func pickScored(hits []lib.Scored, k int, min, window float32) []lib.Entry {
 			continue
 		}
 		seen[h.Entry.Norm] = true
-		out = append(out, h.Entry)
+		out = append(out, h)
 		if len(out) == k {
 			break
 		}
 	}
 	return out
 }
+
+// maybeProactive answers a group message that asks for a picture, without being addressed.
+// It stays silent unless the group is enabled, the message really is a request, something is
+// found, and the group's reply budget allows it.
+func (b *Bot) maybeProactive(ctx context.Context, t qq.Target, msgID, text string) {
+	if !b.cfg.ProactiveAll && !b.cfg.Proactive[t.ID] {
+		return
+	}
+	query, asks := proactive.Extract(text)
+	if !asks {
+		return
+	}
+	if query == "" && b.x.LLM != nil { // the rules saw a request but no phrase: ask the model
+		lctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		q, err := b.x.LLM.ExtractQuery(lctx, text)
+		if err != nil {
+			b.log.Warn("model could not extract the phrase", "err", err)
+			return
+		}
+		query = q
+	}
+	if query == "" || !b.gate.Allow(t.ID, time.Now()) {
+		return
+	}
+	res := b.Search(ctx, query, 6)
+	if len(res) == 0 {
+		return
+	}
+	pick := res[0]
+	for _, r := range res { // prefer a frame of the target person among the closest matches
+		if r.Score >= res[0].Score-0.05 && (r.Face < 0 || r.Face >= b.cfg.MinSim) {
+			pick = r
+			break
+		}
+	}
+	e, ok := b.lib.Get().ByKey(pick.Key)
+	if !ok {
+		return
+	}
+	data, err := e.Bytes()
+	if err != nil {
+		b.log.Error("read image", "text", e.Text, "err", err)
+		return
+	}
+	b.log.Info("proactive reply", "query", query, "match", e.Text, "source", pick.Source, "score", pick.Score)
+	if err := b.api.ReplyImage(ctx, t, msgID, data, ""); err != nil {
+		b.log.Warn("proactive reply failed", "err", err)
+	}
+}
+
+// Search implements api.Backend: literal matches first (pictures of the target person
+// first among them), and when there are none, matches by meaning.
+func (b *Bot) Search(ctx context.Context, q string, k int) []api.Result {
+	l := b.lib.Get()
+	toResult := func(e lib.Entry, score float32, source string) api.Result {
+		return toAPIResult(e, score, source)
+	}
+	var out []api.Result
+	if lit := l.Search(q); len(lit) > 0 {
+		faces := lib.WithFace(lit, b.cfg.MinSim)
+		for _, e := range append(faces, lit...) {
+			if len(out) == k {
+				break
+			}
+			dup := false
+			for _, r := range out {
+				if r.Key == e.Key() {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				out = append(out, toResult(e, 1, "literal"))
+			}
+		}
+		return out
+	}
+	if b.x.Embedder == nil || !l.HasSemantic() {
+		return nil
+	}
+	vec, err := b.x.Embedder.Embed(ctx, q)
+	if err != nil {
+		b.log.Warn("semantic search unavailable", "err", err)
+		return nil
+	}
+	for _, h := range pickScoredHits(l.Semantic(vec, k*4), k, float32(b.cfg.SemMin), 0) {
+		out = append(out, toResult(h.Entry, h.Score, "semantic"))
+	}
+	return out
+}
+
+func toAPIResult(e lib.Entry, score float32, source string) api.Result {
+	return api.Result{
+		Key: e.Key(), Text: e.Text, Ep: e.Ep, T: e.T, Face: e.Sim,
+		Score: score, Source: source, Label: e.Label(),
+	}
+}
+
+// List implements api.Backend: every literal match, shortest first (what /acc shows), or, when
+// nothing matches literally, the closest lines by meaning.
+func (b *Bot) List(ctx context.Context, q string, k int) []api.Result {
+	l := b.lib.Get()
+	var out []api.Result
+	if lit := l.Search(q); len(lit) > 0 {
+		for _, e := range lit {
+			if len(out) == k {
+				break
+			}
+			out = append(out, toAPIResult(e, 1, "literal"))
+		}
+		return out
+	}
+	for _, e := range b.bySense(ctx, q, k, 0) {
+		out = append(out, toAPIResult(e, 0, "semantic"))
+	}
+	return out
+}
+
+// Random implements api.Backend.
+func (b *Bot) Random() (api.Result, bool) {
+	e, ok := b.lib.Get().Random(b.cfg.MinSim)
+	if !ok {
+		return api.Result{}, false
+	}
+	return toAPIResult(e, 0, "random"), true
+}
+
+// Image implements api.Backend.
+func (b *Bot) Image(key string) ([]byte, bool) {
+	e, ok := b.lib.Get().ByKey(key)
+	if !ok {
+		return nil, false
+	}
+	data, err := e.Bytes()
+	return data, err == nil
+}
+
+// Lines implements api.Backend.
+func (b *Bot) Lines() int { return b.lib.Get().Len() }
 
 func (b *Bot) cmdRandom(ctx context.Context, t qq.Target, msgID string) {
 	e, ok := b.lib.Get().Random(b.cfg.MinSim)
