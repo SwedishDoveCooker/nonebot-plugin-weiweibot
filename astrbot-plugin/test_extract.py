@@ -135,4 +135,37 @@ got, cooled = asyncio.run(budget())
 check("calls per minute are capped", len(calls), mod.LLM_PER_MIN)
 check("over the cap gives None", got[-1], None)
 check("cooldown skips the model", cooled, None)
+
+# AstrJudge: answers through the AstrBot provider, falls back to the local judge when it fails.
+async def provider_cases():
+    async def broken(**kw):
+        raise RuntimeError("api down")
+
+    async def working(**kw):
+        return types.SimpleNamespace(completion_text="  →我们不一样 ")
+
+    local = mod.Judge("http://unused")
+
+    async def local_chat(system, user, max_tokens):
+        return "美国想要垄断"
+
+    local._chat = local_chat
+    out = []
+    j = mod.AstrJudge(types.SimpleNamespace(llm_generate=working), "haiku", fallback=local)
+    out.append(("provider answer", await j.wanted_quote(["甲: x"]), "我们不一样"))
+    j = mod.AstrJudge(types.SimpleNamespace(llm_generate=broken), "haiku", fallback=local)
+    out.append(("falls back", await j.wanted_quote(["甲: x"]), "美国想要垄断"))
+    j = mod.AstrJudge(types.SimpleNamespace(llm_generate=broken), "haiku")
+    try:
+        await j.wanted_quote(["甲: x"])
+        out.append(("no fallback raises", "no error", "error"))
+    except RuntimeError:
+        out.append(("no fallback raises", "error", "error"))
+    return out
+
+
+for label, got, want in asyncio.run(provider_cases()):
+    check(f"astrjudge {label}", got, want)
+
+
 sys.exit(1 if bad else 0)

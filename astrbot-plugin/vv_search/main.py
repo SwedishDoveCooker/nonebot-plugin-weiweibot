@@ -93,6 +93,28 @@ class Judge:
         async with self.sem:
             return clean_quote(await self._chat(SYS_ASK, "\n".join(lines) + "\n→", 20))
 
+class AstrJudge(Judge):
+    """The same judge, answered by a chat provider configured in AstrBot (model, key, proxy there)."""
+
+    def __init__(self, context, provider_id: str, fallback: Judge | None = None):
+        super().__init__("")
+        self.context, self.provider_id, self.fallback = context, provider_id, fallback
+
+    async def _chat(self, system: str, user: str, max_tokens: int) -> str:
+        try:
+            resp = await asyncio.wait_for(
+                self.context.llm_generate(
+                    chat_provider_id=self.provider_id, prompt=user, system_prompt=system
+                ),
+                LLM_TIMEOUT_S,
+            )
+            return (resp.completion_text or "").strip()
+        except Exception as err:  # noqa: BLE001 - fall back to the local model when the API is down
+            if self.fallback is None:
+                raise
+            logger.warning(f"vv_search: provider {self.provider_id} failed ({err!r}), using the local model")
+            return await self.fallback._chat(system, user, max_tokens)
+
 def rest(text: str, *names: str) -> str:
     """What follows the command word, whether or not the platform already removed it."""
     m = re.match(r"^\s*[/／]?\s*(?:" + "|".join(map(re.escape, names)) + r")(?=\s|$)\s*", text, re.I)
@@ -114,7 +136,9 @@ class VVSearch(Star):
         self.token = cfg.get("token", "")
         self.owners = set(cfg.get("owners", []))
         llm = cfg.get("llm") or {}
-        self.judge = Judge(llm["url"], llm.get("model", "local")) if llm.get("url") else None
+        local = Judge(llm["url"], llm.get("model", "local")) if llm.get("url") else None
+        pid = llm.get("provider_id")
+        self.judge = AstrJudge(context, pid, fallback=local) if pid else local
         self._llm_calls: dict[str, deque[float]] = defaultdict(deque)
         self._log: dict[str, list[tuple[float, str, str]]] = defaultdict(list)  # group -> (time, who, text)
         os.makedirs(TMP, exist_ok=True)
@@ -292,6 +316,20 @@ class VVSearch(Star):
         if self._is_owner(event):
             yield event.plain_result(await self._owner("POST", "/api/owner/go"))
 
+    @filter.command("judge")
+    async def judge(self, event: AstrMessageEvent):
+        """/judge 一句话: show what the model makes of a message (owner only, for tuning)."""
+        if not self._is_owner(event) or self.judge is None:
+            return
+        text = rest(event.message_str, "judge")
+        if not text:
+            return
+        try:
+            t0 = time.time()
+            query = await self.judge.wanted_quote([f"甲: {text}"])
+            yield event.plain_result(f"{query!r} ({time.time() - t0:.1f}s)")
+        except Exception as err:  # noqa: BLE001
+            yield event.plain_result(f"模型调用失败: {err!r}"[:300])
     @filter.command("status")
     async def status(self, event: AstrMessageEvent):
         """/status"""
