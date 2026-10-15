@@ -1,0 +1,27 @@
+{
+  "proactive": {
+    "description": "群里有人要表情包时主动回复",
+    "type": "bool",
+    "default": true
+  },
+  "provider_id": {
+    "description": "用来判断的聊天提供商 ID (在 AstrBot 的模型提供商里配置)",
+    "type": "string",
+    "default": "haiku"
+  },
+  "local_url": {
+    "description": "本地模型地址, 提供商调用失败时备用 (llama.cpp 的 OpenAI 兼容接口)",
+    "type": "string",
+    "default": "http://192.168.0.161:8080"
+  },
+  "min_score": {
+    "description": "模型猜出台词后, 图的语义相似度至少多少才发 (字面匹配不受限)",
+    "type": "float",
+    "default": 0.7
+  },
+  "replies_per_10min": {
+    "description": "每个群 10 分钟内最多主动发几张图",
+    "type": "int",
+    "default": 5
+  }
+}

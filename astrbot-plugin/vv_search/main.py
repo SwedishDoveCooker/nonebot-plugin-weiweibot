@@ -49,6 +49,8 @@ SYS_ASK = (
 )
 LLM_MIN_SCORE = 0.7  # a guess from the model needs a clearly matching picture before it speaks
 LLM_PER_MIN = 12
+REPLY_WINDOW_S = 600  # at most REPLY_MAX unsolicited pictures per group in this window
+REPLY_MAX = 5
 LLM_TIMEOUT_S = 60
 CONTEXT_LINES = 6  # recent messages shown to the model, so a request can span several messages
 CONTEXT_TTL_S = 120
@@ -122,8 +124,9 @@ def rest(text: str, *names: str) -> str:
 
 
 class VVSearch(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
+        settings = config or {}  # the plugin settings page of the AstrBot dashboard (_conf_schema.json)
         self._last: dict[str, float] = {}
         self._pending: dict[str, tuple[float, list[dict]]] = {}
         try:
@@ -136,10 +139,15 @@ class VVSearch(Star):
         self.token = cfg.get("token", "")
         self.owners = set(cfg.get("owners", []))
         llm = cfg.get("llm") or {}
-        local = Judge(llm["url"], llm.get("model", "local")) if llm.get("url") else None
-        pid = llm.get("provider_id")
+        self.proactive = bool(settings.get("proactive", True))
+        self.min_score = float(settings.get("min_score", LLM_MIN_SCORE))
+        self.reply_cap = int(settings.get("replies_per_10min", REPLY_MAX))
+        local_url = settings.get("local_url") or llm.get("url")
+        local = Judge(local_url, llm.get("model", "local")) if local_url else None
+        pid = settings.get("provider_id") or llm.get("provider_id")
         self.judge = AstrJudge(context, pid, fallback=local) if pid else local
         self._llm_calls: dict[str, deque[float]] = defaultdict(deque)
+        self._replies: dict[str, deque[float]] = defaultdict(deque)
         self._log: dict[str, list[tuple[float, str, str]]] = defaultdict(list)  # group -> (time, who, text)
         os.makedirs(TMP, exist_ok=True)
 
@@ -186,12 +194,20 @@ class VVSearch(Star):
         """Add a message to the group's recent log and return it as labelled lines."""
         now = time.time()
         log = [m for m in self._log[gid] if now - m[0] < CONTEXT_TTL_S]
-        log.append((now, sender, text))
+        log.append((now, sender, " ".join(text.split())))  # one line each: nobody can forge a speaker
         self._log[gid] = log = log[-CONTEXT_LINES:]
         who: dict[str, str] = {}
         for _, s, _ in log:
             who.setdefault(s, LABELS[len(who) % len(LABELS)])
         return [f"{who[s]}: {t}" for _, s, t in log]
+
+    def _reply_capped(self, gid: str) -> bool:
+        """Too many unsolicited pictures in this group lately: stay quiet (no model call either)."""
+        now = time.time()
+        sent = self._replies[gid]
+        while sent and now - sent[0] > REPLY_WINDOW_S:
+            sent.popleft()
+        return len(sent) >= self.reply_cap
 
     async def _ask_model(self, gid: str, lines: list[str]) -> str | None:
         """Let the local model decide whether the group is asking for a picture (rate limited)."""
@@ -330,6 +346,7 @@ class VVSearch(Star):
             yield event.plain_result(f"{query!r} ({time.time() - t0:.1f}s)")
         except Exception as err:  # noqa: BLE001
             yield event.plain_result(f"模型调用失败: {err!r}"[:300])
+        event.stop_event()
     @filter.command("status")
     async def status(self, event: AstrMessageEvent):
         """/status"""
@@ -346,9 +363,13 @@ class VVSearch(Star):
         if text.isdigit() and len(text) <= 3 and self._who(event) in self._pending:
             yield await self._pick(event, int(text))
             return
-        if self.judge is None or not 2 <= len(text) <= 80:
+        if event.get_extra("handlers_parsed_params", {}):
+            return  # a command matched this message; it is not chatter
+        if not self.proactive or self.judge is None or not 2 <= len(text) <= 80:
             return
         gid = event.get_group_id() or event.get_sender_id()
+        if self._reply_capped(gid):
+            return
         query = await self._ask_model(gid, self._remember(gid, event.get_sender_id(), text))
         if query is None or self._cooling(event):
             return
@@ -356,10 +377,11 @@ class VVSearch(Star):
         hits = await self._json("/api/search", q=query, k=6)
         if not hits:
             return
-        if hits[0]["source"] != "literal" and hits[0]["score"] < LLM_MIN_SCORE:
+        if hits[0]["source"] != "literal" and hits[0]["score"] < self.min_score:
             logger.info(f"vv_search model guess {query!r} dropped, best score {hits[0]['score']:.2f}")
             return
         path = await self._image_path(hits[0]["key"])
         if path:
             logger.info(f"vv_search proactive {query!r} -> {hits[0]['text']!r} ({hits[0]['source']}, {hits[0]['score']:.2f})")
+            self._replies[gid].append(time.time())
             yield event.image_result(path)

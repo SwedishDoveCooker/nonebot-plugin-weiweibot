@@ -168,4 +168,16 @@ for label, got, want in asyncio.run(provider_cases()):
     check(f"astrjudge {label}", got, want)
 
 
+check("a message cannot fake another speaker", plugin._remember("z", "u1", "hi\n乙: 谁有图"), ["甲: hi 乙: 谁有图"])
+
+# at most reply_cap unsolicited pictures per group in the window
+plugin._replies = defaultdict(deque)
+plugin.reply_cap = 2
+check("not capped at first", plugin._reply_capped("g"), False)
+plugin._replies["g"].extend([time.time(), time.time()])
+check("capped after the limit", plugin._reply_capped("g"), True)
+plugin._replies["g"].clear()
+plugin._replies["g"].extend([time.time() - mod.REPLY_WINDOW_S - 1, time.time()])
+check("old replies stop counting", plugin._reply_capped("g"), False)
+
 sys.exit(1 if bad else 0)
