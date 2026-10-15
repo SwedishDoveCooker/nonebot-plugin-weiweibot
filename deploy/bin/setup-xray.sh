@@ -10,7 +10,7 @@
 set -euo pipefail
 
 DIR=/mnt/ssd/xray
-PORT=10808
+LOCAL_PORT=10808
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$DIR/node.env" ] || { echo "missing $DIR/node.env"; exit 1; }
 
@@ -26,7 +26,7 @@ if [ ! -x "$DIR/xray" ]; then
 fi
 
 set -a; . "$DIR/node.env"; set +a
-python3 - "$HERE/xray/config.template.json" "$DIR/config.json" "$PORT" <<'PY'
+python3 - "$HERE/xray/config.template.json" "$DIR/config.json" "$LOCAL_PORT" <<'PY'
 import os, sys
 src, dst, port = sys.argv[1:4]
 text = open(src, encoding="utf-8").read()
@@ -47,6 +47,6 @@ systemctl enable --now xray.service
 
 ENVF=/mnt/ssd/vvbot/daemon.env
 touch "$ENVF"
-grep -q '^VV_PROXY=' "$ENVF" || echo "VV_PROXY=socks5://127.0.0.1:$PORT" >> "$ENVF"
+grep -q '^VV_PROXY=' "$ENVF" || echo "VV_PROXY=socks5://127.0.0.1:$LOCAL_PORT" >> "$ENVF"
 systemctl restart vvpipe-daemon.service
-echo "xray is up on 127.0.0.1:$PORT; the updater will use it for YouTube"
+echo "xray is up on 127.0.0.1:$LOCAL_PORT; the updater will use it for YouTube"
