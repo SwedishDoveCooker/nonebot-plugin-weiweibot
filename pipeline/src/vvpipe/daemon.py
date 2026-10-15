@@ -21,6 +21,7 @@ from .faces import FaceMatcher
 from .subtitle import Reader
 
 FETCH_RETRY_SECONDS = 30 * 60
+BILI_CHECK_SECONDS = 20 * 3600  # about once a day; the account does not post on a schedule
 EMBED_RETRY_SECONDS = 10 * 60
 _JOB = re.compile(r"^ep(\d{4})\.json$")
 
@@ -47,6 +48,9 @@ class Config:
     proxy: str | None = None
     poll: int = 30
     embed_url: str | None = None  # embed-serve; when set, new episodes get sentence vectors
+    bili_mid: int = 0  # a Bilibili account whose new videos are indexed once a day; 0 = off
+    bili_keyword: str = ""  # the account's name, used to find its videos
+    bili_work: Path | None = None  # where its state file and downloads live
 
 
 @dataclass
@@ -142,6 +146,48 @@ class Daemon:
                 self._told.add(ep)
                 self.note(f"第 {ep} 集暂时下不到: {str(err)[:120]}。会每 30 分钟重试。")
 
+    def bili_check(self) -> None:
+        """Index the account's videos of the last few days that are not in the index yet."""
+        import datetime as dt
+
+        from . import bili_fetch as bf
+        from . import bili_ingest as bi
+
+        cfg = self.cfg
+        if not cfg.bili_mid or cfg.bili_work is None:
+            return
+        state = bi.State.load(cfg.bili_work / "bili_state.json")
+        if time.time() - state.data.get("last_check", 0) < BILI_CHECK_SECONDS:
+            return
+        state.data["last_check"] = (
+            time.time()
+        )  # also when it fails: try again tomorrow, not in a loop
+        state.save()
+        session = bf.Session()
+        end = dt.datetime.now()
+        videos = session.search_window(
+            cfg.bili_mid, cfg.bili_keyword, end - dt.timedelta(days=6), end
+        )
+        todo = state.todo(videos)
+        if not todo:
+            return
+        from .faces import FaceMatcher
+        from .subtitle import Reader
+
+        titles: list[str] = []
+        counts = bi.run(
+            session, videos, state, cfg.index, cfg.bili_work,
+            FaceMatcher(cfg.models, cfg.ref), Reader(),
+            on_done=lambda v, ids: titles.append(v.title),
+        )  # fmt: skip
+        self.embed_vectors()
+        if titles:
+            self.note(f"张维为 B 站新增 {len(titles)} 个视频已入库:\n" + "\n".join(titles[:8]))
+        if counts["failed"] or counts["lowres"]:
+            self.note(
+                f"B 站新视频有 {counts['failed']} 个失败、{counts['lowres']} 个没有 1080p, 会再试"
+            )
+
     def run(self) -> None:
         print("updater daemon started", file=sys.stderr, flush=True)
         next_embed = 0.0
@@ -150,6 +196,7 @@ class Daemon:
                 self.tick()
                 # Episodes can arrive without vectors (the service was still loading at boot, or
                 # they were copied in from another machine): look again every few minutes.
+                self.bili_check()
                 if time.time() >= next_embed:
                     self.embed_vectors()
                     next_embed = time.time() + EMBED_RETRY_SECONDS

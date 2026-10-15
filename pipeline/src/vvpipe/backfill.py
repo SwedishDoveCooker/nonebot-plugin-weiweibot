@@ -45,8 +45,12 @@ class Push:
         ssh = ["ssh", "-i", str(self.key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]
         scp = ["scp", "-q", "-i", str(self.key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]
         pack, idx = out_dir / "frames" / f"{name}.pack", out_dir / "entries" / f"{name}.jsonl"
+        origin = out_dir / "sources" / f"{name}.json"
         # Pack first, index last: the bot only lists episodes that have an index file.
-        for src, sub in ((pack, "frames"), (idx, "entries")):
+        files = [(pack, "frames"), (origin, "sources"), (idx, "entries")]
+        for src, sub in (f for f in files if f[0].exists()):
+            if sub == "sources":
+                subprocess.run([*ssh, host, f"mkdir -p '{remote}/sources'"], check=True)
             part = f"{remote}/{sub}/{src.name}.part"
             subprocess.run([*scp, str(src), f"{host}:{part}"], check=True)
             subprocess.run(

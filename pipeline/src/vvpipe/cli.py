@@ -71,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
         help="proxy that reaches YouTube, e.g. socks5://127.0.0.1:1080 (default: $VV_PROXY)",
     )
     p.add_argument("--poll", type=int, default=30)
+    p.add_argument("--bili-mid", type=int, default=int(os.environ.get("VV_BILI_MID") or 0))
+    p.add_argument("--bili-keyword", default=os.environ.get("VV_BILI_KEYWORD", "张维为"))
+    p.add_argument("--bili-work", type=Path, help="state and downloads of the Bilibili account")
     p.add_argument(
         "--embed-url",
         default=os.environ.get("VV_EMBED_URL") or None,
@@ -87,6 +90,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--threads", type=int)
 
+    p = sub.add_parser(
+        "bili-backfill", help="index every video of a Bilibili account (guest 1080p)"
+    )
+    p.add_argument("--mid", type=int, default=1458767615)
+    p.add_argument(
+        "--keyword", default="张维为", help="the account's name, used to find its videos"
+    )
+    p.add_argument("--since", default="2019-01-01")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--work", type=Path, required=True)
+    p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
+    p.add_argument("--push", help="user@host:/remote/index/dir (as for backfill)")
+    p.add_argument("--key", type=Path)
+    p.add_argument("--limit", type=int, help="stop after this many videos")
+    p.add_argument("--relist", action="store_true", help="ignore the cached video list")
+    p.add_argument("--list-only", action="store_true")
     p = sub.add_parser(
         "legacy-import", help="add the old nonebot-plugin-weiweibot pictures (assets.tar.gz)"
     )
@@ -123,8 +142,46 @@ def main(argv: list[str] | None = None) -> int:
             index=args.index, inbox=args.inbox, jobs=args.jobs, notify=args.notify,
             models=args.models, ref=args.ref, bili=args.bili, cookies=args.cookies,
             proxy=args.proxy, poll=args.poll, embed_url=args.embed_url,
+            bili_mid=args.bili_mid, bili_keyword=args.bili_keyword, bili_work=args.bili_work,
         )  # fmt: skip
         Daemon(cfg, fetcher=make_fetcher(cfg)).run()
+        return 0
+    if args.cmd == "bili-backfill":
+        import datetime as dt
+        import time
+
+        from . import bili_fetch as bf
+        from . import bili_ingest as bi
+        from .backfill import Push
+
+        args.work.mkdir(parents=True, exist_ok=True)
+        cache = args.work / "bili_list.json"
+        session = bf.Session()
+        fresh = cache.exists() and time.time() - cache.stat().st_mtime < 86400 and not args.relist
+        if fresh:
+            videos = [bf.Video(**v) for v in json.loads(cache.read_text("utf-8"))]
+        else:
+            since = dt.date.fromisoformat(args.since)
+            videos = session.list_all(args.mid, args.keyword, since)
+            cache.write_text(json.dumps([v.__dict__ for v in videos], ensure_ascii=False), "utf-8")
+        hours = sum(v.length_s for v in videos) / 3600
+        print(json.dumps({"videos": len(videos), "hours": round(hours, 1)}))
+        if args.list_only:
+            return 0
+        push = Push(args.push, args.key) if args.push else None
+        state = bi.State.load(args.work / "bili_state.json")
+
+        def pushed(video, ids):
+            if push:
+                for ep in ids:
+                    push.send(args.out, ep)
+
+        counts = bi.run(
+            session, videos, state, args.out, args.work,
+            FaceMatcher(args.models, args.ref), subtitle.Reader(),
+            on_done=pushed, stop_after=args.limit,
+        )  # fmt: skip
+        print(json.dumps(counts))
         return 0
     if args.cmd == "legacy-import":
         from . import legacy
