@@ -28,6 +28,8 @@ from .subtitle import Reader
 MIN_MINUTES, MAX_MINUTES = 15, 70
 MAX_CONSECUTIVE_FAILURES = 3
 QUEUE_DEPTH = 2
+TRANSIENT_RETRIES = 2
+TRANSIENT_PAUSE_S = 5
 
 
 @dataclass
@@ -165,6 +167,7 @@ def run(
     def get_video(ep: int, vid: str) -> Path:
         """Download one episode; when YouTube asks for verification, wait and probe again."""
         attempt = 0
+        transient = 0
         while True:
             try:
                 _log(f"ep{ep}: downloading {vid}")
@@ -192,6 +195,14 @@ def run(
                         _log(f"could not send the waiting notice: {err}")
                 if r.stop_event.wait(botcheck_wait_min * 60):
                     raise
+            except Exception as err:  # noqa: BLE001
+                # A vanished fragment file, a dropped connection: yt-dlp resumes what is on disk,
+                # so trying again right away is cheap and usually enough.
+                transient += 1
+                if transient > TRANSIENT_RETRIES or r.stop_event.is_set():
+                    raise
+                _log(f"ep{ep}: download error, retrying ({transient}/{TRANSIENT_RETRIES}): {err}")
+                time.sleep(TRANSIENT_PAUSE_S)
 
     for ep in episodes:
         if r.stop_event.is_set():

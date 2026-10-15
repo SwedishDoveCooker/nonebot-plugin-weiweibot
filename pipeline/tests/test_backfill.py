@@ -73,6 +73,42 @@ def test_bot_check_is_waited_out_and_the_same_episode_retried(fakes, monkeypatch
     assert done == [2, 1]
 
 
+def test_a_transient_download_error_is_retried_in_place(fakes, monkeypatch):
+    done, calls, tmp = fakes
+    monkeypatch.setattr(backfill, "TRANSIENT_PAUSE_S", 0)
+    state = {"errors": 2}
+    real = fetch.download
+
+    def flaky(vid, dest, cookies=None, rate=None, browser_profile=None, player_client=None):
+        if state["errors"] > 0:
+            state["errors"] -= 1
+            calls.append("error")
+            raise RuntimeError("[Errno 2] No such file or directory: 'x.part-Frag268'")
+        return real(vid, dest, cookies, rate, browser_profile, player_client)
+
+    monkeypatch.setattr(fetch, "download", flaky)
+    assert _run(tmp, [1], {1: "a"}) == 0
+    assert calls == ["error", "error", "a"]
+    assert done == [1]  # the episode was not recorded as failed
+
+
+def test_a_persistent_download_error_fails_the_episode_not_the_run(fakes, monkeypatch):
+    done, calls, tmp = fakes
+    monkeypatch.setattr(backfill, "TRANSIENT_PAUSE_S", 0)
+
+    def broken(vid, dest, cookies=None, rate=None, browser_profile=None, player_client=None):
+        calls.append(vid)
+        if vid == "bad":
+            raise RuntimeError("disk on fire")
+        return fakes_real(vid, dest)
+
+    fakes_real = fetch.download
+    monkeypatch.setattr(fetch, "download", broken)
+    assert _run(tmp, [2, 1], {2: "bad", 1: "a"}) == 0
+    assert calls.count("bad") == backfill.TRANSIENT_RETRIES + 1
+    assert done == [1]  # the next episode still went through
+
+
 def test_gives_up_after_the_retry_budget(fakes, monkeypatch):
     done, calls, tmp = fakes
 
