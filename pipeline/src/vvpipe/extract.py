@@ -27,12 +27,17 @@ import numpy as np
 
 from . import subtitle
 from .faces import FaceMatcher
+from .fetch import MIN_HEIGHT, video_height
 
 W, H = 1920, 1080
 MIN_CONF = 0.6
 MAX_GAP_S = 2
 SAME_LINE_RATIO = 0.75
 JPEG_QUALITY = 85
+
+
+class LowResolutionError(RuntimeError):
+    """The source video is below 1080p; blurry frames would be worse than no frames."""
 
 
 def norm(s: str) -> str:
@@ -110,6 +115,9 @@ def extract_episode(
     pack_path, idx_path = frames_dir / f"{name}.pack", entries_dir / f"{name}.jsonl"
     if idx_path.exists() and not force:
         return {"ep": ep, "skipped": True}
+    height = video_height(video)
+    if height < MIN_HEIGHT:
+        raise LowResolutionError(f"{video.name} is only {height}p; 1080p is required")
 
     pack_tmp, idx_tmp = pack_path.with_suffix(".pack.tmp"), idx_path.with_suffix(".jsonl.tmp")
     started = time.time()
@@ -136,6 +144,7 @@ def extract_episode(
                     "sim": round(g.sim, 3),
                     "off": off,
                     "len": len(jpg),
+                    "h": height,
                 }
             )
 

@@ -91,7 +91,14 @@ def import_once(
             print(f"{video.name}: episode {ep} is already indexed, moving to done", file=log)
         else:
             print(f"{video.name}: episode {ep}, extracting", file=log)
-            res = ex.extract_episode(video, ep, out_dir, matcher, reader, log=log)
+            try:
+                res = ex.extract_episode(video, ep, out_dir, matcher, reader, log=log)
+            except ex.LowResolutionError as err:
+                print(
+                    f"{video.name}: {err}; left in the folder, replace it with a 1080p file",
+                    file=log,
+                )
+                continue
             print(f"ep{ep}: done {res}", file=log)
             if push:
                 push.send(out_dir, ep)

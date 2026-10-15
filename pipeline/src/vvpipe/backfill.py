@@ -138,6 +138,7 @@ def run(
     rate: int | None = None,
     botcheck_wait_min: float = 0,
     botcheck_retries: int = 0,
+    player_client: str | None = None,
 ) -> int:
     _keep_awake()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +169,12 @@ def run(
             try:
                 _log(f"ep{ep}: downloading {vid}")
                 return fetch.download(
-                    vid, work_dir / "dl", cookies, rate=rate, browser_profile=browser_profile
+                    vid,
+                    work_dir / "dl",
+                    cookies,
+                    rate=rate,
+                    browser_profile=browser_profile,
+                    player_client=player_client,
                 )
             except fetch.BotCheckError:
                 attempt += 1

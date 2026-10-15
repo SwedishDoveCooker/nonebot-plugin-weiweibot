@@ -1,6 +1,14 @@
 import numpy as np
+import pytest
 
 from vvpipe import extract
+
+
+def test_low_resolution_video_is_refused_before_any_work(monkeypatch, tmp_path):
+    monkeypatch.setattr(extract, "video_height", lambda p: 360)
+    with pytest.raises(extract.LowResolutionError):
+        extract.extract_episode(tmp_path / "v.mp4", 1, tmp_path / "out", None, None)
+    assert not (tmp_path / "out" / "entries" / "ep0001.jsonl").exists()
 
 
 def test_same_line_tolerates_ocr_noise():

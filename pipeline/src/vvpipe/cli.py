@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rate-limit-mb", type=float, default=0, help="MB/s, 0 means unlimited")
     p.add_argument("--botcheck-wait-min", type=float, default=0, help="wait and retry on bot-check")
     p.add_argument("--botcheck-retries", type=int, default=20)
+    p.add_argument("--player-client", help="yt-dlp YouTube player client, e.g. web_safari")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--work", type=Path, required=True)
     p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
@@ -110,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             browser_profile=args.firefox_profile,
             botcheck_wait_min=args.botcheck_wait_min,
             botcheck_retries=args.botcheck_retries,
+            player_client=args.player_client,
             rate=int(args.rate_limit_mb * 1024 * 1024) or None,
         )  # fmt: skip
     return 2

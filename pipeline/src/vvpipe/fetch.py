@@ -8,10 +8,21 @@ from pathlib import Path
 import yt_dlp
 
 # 1080p H.264 + AAC when available (about 350 MB for a 35-minute episode).
-FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]"
+MIN_HEIGHT = 1000  # never accept less than 1080p: a soft-blocked session may offer only 360p
+FORMAT = (
+    "bv*[height<=1080][height>=1000][vcodec^=avc1]+ba[ext=m4a]"
+    "/bv*[height<=1080][height>=1000]+ba"
+    "/b[height<=1080][height>=1000]"  # a combined stream, e.g. the HLS one of web_safari
+)
 RATE_LIMIT: int | None = None  # bytes per second; None means unlimited
 
-_BOT_MARKERS = ("not a bot", "Sign in to confirm", "page needs to be reloaded", "HTTP Error 429")
+_BOT_MARKERS = (
+    "not a bot",
+    "Sign in to confirm",
+    "page needs to be reloaded",
+    "HTTP Error 429",
+    "Requested format is not available",  # only low-quality formats were offered
+)
 
 
 class BotCheckError(RuntimeError):
@@ -24,14 +35,14 @@ def download(
     cookies: Path | None = None,
     rate: int | None = RATE_LIMIT,
     browser_profile: Path | None = None,
+    player_client: str | None = None,
 ) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     opts: dict = {
         "format": FORMAT,
         "retries": 3,
         "fragment_retries": 3,
-        "concurrent_fragment_downloads": 1,
-        "sleep_interval_requests": 1.5,
+        "concurrent_fragment_downloads": 4,  # HLS has hundreds of small fragments
         "outtmpl": str(dest_dir / f"{video_id}.%(ext)s"),
         "merge_output_format": "mkv",
         "noprogress": True,
@@ -46,6 +57,8 @@ def download(
         opts["cookiefile"] = str(cookies)
     if rate:
         opts["ratelimit"] = rate
+    if player_client:  # e.g. web_safari still offers 1080p while the default client is downgraded
+        opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
@@ -56,8 +69,23 @@ def download(
         raise
     for p in sorted(dest_dir.glob(f"{video_id}.*")):
         if p.suffix in (".mkv", ".mp4", ".webm"):
+            height = video_height(p)
+            if height < MIN_HEIGHT:
+                p.unlink(missing_ok=True)
+                raise BotCheckError(f"only {height}p was delivered for {video_id}")
             return p
     raise FileNotFoundError(f"download of {video_id} produced no video file")
+
+
+def video_height(video: Path) -> int:
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height"]
+    out = subprocess.run(
+        [*cmd, "-of", "csv=p=0", str(video)], capture_output=True, text=True, check=False
+    )
+    try:
+        return int(out.stdout.strip().split(",")[0])
+    except ValueError:
+        return 0
 
 
 def duration_seconds(video: Path) -> float:

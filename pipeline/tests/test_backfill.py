@@ -10,7 +10,7 @@ def fakes(monkeypatch, tmp_path):
     done: list[int] = []
     calls: list[str] = []
 
-    def fake_download(vid, dest, cookies=None, rate=None, browser_profile=None):
+    def fake_download(vid, dest, cookies=None, rate=None, browser_profile=None, player_client=None):
         calls.append(vid)
         if vid == "BOT":
             raise fetch.BotCheckError("sign in")
@@ -59,12 +59,12 @@ def test_bot_check_is_waited_out_and_the_same_episode_retried(fakes, monkeypatch
     state = {"blocked": 2}
     real = fetch.download
 
-    def flaky(vid, dest, cookies=None, rate=None, browser_profile=None):
+    def flaky(vid, dest, cookies=None, rate=None, browser_profile=None, player_client=None):
         if state["blocked"] > 0:
             state["blocked"] -= 1
             calls.append("blocked")
             raise fetch.BotCheckError("sign in")
-        return real(vid, dest, cookies, rate, browser_profile)
+        return real(vid, dest, cookies, rate, browser_profile, player_client)
 
     monkeypatch.setattr(fetch, "download", flaky)
     code = _run(tmp, [2, 1], {2: "b", 1: "a"}, botcheck_wait_min=0.0005, botcheck_retries=5)
@@ -76,7 +76,9 @@ def test_bot_check_is_waited_out_and_the_same_episode_retried(fakes, monkeypatch
 def test_gives_up_after_the_retry_budget(fakes, monkeypatch):
     done, calls, tmp = fakes
 
-    def always_blocked(vid, dest, cookies=None, rate=None, browser_profile=None):
+    def always_blocked(
+        vid, dest, cookies=None, rate=None, browser_profile=None, player_client=None
+    ):
         calls.append(vid)
         raise fetch.BotCheckError("sign in")
 
