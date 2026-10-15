@@ -10,10 +10,12 @@ Without being addressed it answers "有没有群友有那个说「…」的表�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import time
+from collections import defaultdict, deque
 
 import aiohttp
 
@@ -45,6 +47,59 @@ NOISE = re.compile(
     r"有没有|有谁有|谁有|群友|这个|那个|就是|之类的|的表情包|表情包|表情|梗图|求|来个|发个|想要|[?？!！。,，~ ]"
 )
 
+
+# Words that make a message worth showing to the local model; everything else is never sent.
+CUES = re.compile(r"表情|梗图|图|台词|谁有|有没有|哪期|出处|截图|那句|原话|说过|怎么说")
+SYS_ASK = (
+    "你在一个QQ群里。如果这条群消息是在向群友要某句台词或某个梗的表情包/图片,"
+    "只输出对方想找的那句台词原文;否则只输出 无。\n"
+    "例:“有没有那个说我们不一样的图”→我们不一样\n"
+    "例:“求一张美国想要垄断的梗图”→美国想要垄断\n"
+    "例:“今天中午吃啥”→无\n"
+    "例:“这个表情包不好看”→无"
+)
+LLM_MIN_SCORE = 0.7  # a guess from the model needs a clearly matching picture before it speaks
+LLM_PER_MIN = 6
+LLM_TIMEOUT_S = 40
+
+
+def clean_quote(raw: str) -> str | None:
+    lines = raw.strip().splitlines()
+    q = re.sub(r"^[\s\"“'‘「『《]+|[\s\"”'’」』》。.!！?？]+$", "", lines[0] if lines else "")
+    return q if 2 <= len(q) <= 30 and q != "无" else None
+
+
+class Judge:
+    """Asks a local OpenAI-compatible server (llama.cpp on the Jetson) whether to join in."""
+
+    def __init__(self, url: str, model: str = "local"):
+        self.url, self.model = url.rstrip("/"), model
+        self.sem = asyncio.Semaphore(1)  # the board has one slot: skip rather than queue up
+
+    async def _chat(self, system: str, user: str, max_tokens: int) -> str:
+        body = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "cache_prompt": True,
+        }
+        timeout = aiohttp.ClientTimeout(total=LLM_TIMEOUT_S)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.post(f"{self.url}/v1/chat/completions", json=body) as r:
+                r.raise_for_status()
+                return (await r.json())["choices"][0]["message"]["content"].strip()
+
+    async def wanted_quote(self, text: str) -> str | None:
+        """The quote being asked for, or None when the message is not such a request.
+
+        One call only: the shared system prompt stays in the server's prompt cache, and a second
+        call with a different prompt would push it out again (the board has a single slot).
+        """
+        if self.sem.locked():
+            return None
+        async with self.sem:
+            return clean_quote(await self._chat(SYS_ASK, text, 20))
 
 def extract_query(text: str) -> str | None:
     """The phrase to look for, or None when the message is not asking for a picture."""
@@ -79,6 +134,9 @@ class VVSearch(Star):
         self.api = cfg.get("api", "http://127.0.0.1:8770")
         self.token = cfg.get("token", "")
         self.owners = set(cfg.get("owners", []))
+        llm = cfg.get("llm") or {}
+        self.judge = Judge(llm["url"], llm.get("model", "local")) if llm.get("url") else None
+        self._llm_calls: dict[str, deque[float]] = defaultdict(deque)
         os.makedirs(TMP, exist_ok=True)
 
     # ---- helpers -------------------------------------------------------------------------
@@ -119,6 +177,42 @@ class VVSearch(Star):
             return True
         self._last[gid] = now
         return False
+
+    async def _ask_model(self, event: AstrMessageEvent, text: str) -> str | None:
+        """Let the local model decide whether this message is a picture request (rate limited)."""
+        gid = event.get_group_id() or event.get_sender_id()
+        now = time.time()
+        if now - self._last.get(gid, 0) < COOLDOWN_S:
+            return None
+        calls = self._llm_calls[gid]
+        while calls and now - calls[0] > 60:
+            calls.popleft()
+        if len(calls) >= LLM_PER_MIN:
+            return None
+        calls.append(now)
+        try:
+            query = await self.judge.wanted_quote(text)
+        except Exception as err:  # noqa: BLE001 - the model being down must not break the bot
+            logger.warning(f"vv_search: local model unavailable: {err!r}")
+            return None
+        logger.info(f"vv_search model verdict for {text[:40]!r}: {query!r}")
+        return query
+
+    @filter.llm_tool(name="search_meme")
+    async def search_meme(self, event: AstrMessageEvent, query: str):
+        """Find the 这就是中国 picture whose subtitle best matches a quote and send it to the chat.
+
+        Args:
+            query(string): the quote or topic to look for
+        """
+        hits = await self._json("/api/search", q=query, k=6)
+        if not hits:
+            return "没有找到匹配的图片"
+        path = await self._image_path(hits[0]["key"])
+        if not path:
+            return "图片发送失败"
+        await event.send(event.image_result(path))
+        return f"已发送图片: {hits[0]['text']}"
 
     # ---- commands ------------------------------------------------------------------------
     @filter.command("help")
@@ -226,9 +320,15 @@ class VVSearch(Star):
             yield await self._pick(event, int(text))
             return
         query = extract_query(text)
+        from_model = False
+        if query is None and self.judge and 2 <= len(text) <= 80 and CUES.search(text):
+            query, from_model = await self._ask_model(event, text), True
         if query is None or self._cooling(event):
             return
         hits = await self._json("/api/search", q=query, k=6)
+        if from_model and hits and hits[0]["source"] != "literal" and hits[0]["score"] < LLM_MIN_SCORE:
+            logger.info(f"vv_search model guess {query!r} dropped, best score {hits[0]['score']:.2f}")
+            return
         if not hits:
             return
         path = await self._image_path(hits[0]["key"])
