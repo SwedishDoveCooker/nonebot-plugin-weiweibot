@@ -98,3 +98,28 @@ cd /mnt/ssd/vvbot/pipeline && ./.venv/bin/vvpipe embed --index /mnt/ssd/vvbot/da
 - AstrBot 管理面板只绑定本机, 需要时用 SSH 隧道访问 6185 端口。
 - AstrBot 会把群里所有人的消息正文写进 journald 日志(日志在内存里, 重启即清)。
 - Jetson 暂未参与: 等换 SD 卡、重装环境后再试 GPU 识别与本地大模型。
+
+## 图片来源 (sources)
+
+索引里每个 id 对应一个来源, 记录在 `index/sources/epNNNN.json` (一个来源一个文件, 多台机器各自添加不会互相覆盖):
+
+| id | 来源 | kind |
+|---|---|---|
+| 1 - 9999 | 《这就是中国》第 N 期(标题取自 B 站) | `ztjzg` |
+| 10000+ | 张维为 B 站账号(mid 1458767615)的视频, 一个视频(分 P 各算一个) 一个 id | `bili` |
+| 90000 | 旧的 nonebot-plugin-weiweibot 图片包(1447 张, 没有出处) | `legacy` |
+
+API 的搜索结果带 `detail`(完整出处), AstrBot 插件发图时把它放在图片下面。
+
+### 张维为 B 站账号
+
+- **免登录 1080p**: B 站对游客默认只给 480p, 但网页播放器的"试看"模式用非 wbi 的
+  `x/player/playurl?...&try_look=1` 能拿到 1080p DASH。`bili_fetch.py` 直接调用它, 再用 ffmpeg 合并成 mkv,
+  所以不需要账号, 也没有 cookie 过期的问题。仍然只收 ≥1080p, 低于就记为 `lowres` 并以后重试。
+- **列出全部视频**: 账号空间的列表接口对游客做了风控(-352/412), 改用搜索接口: 以账号名为关键词、
+  按 30 天一个时间窗口检索, 只保留 mid 匹配的结果。
+- **字幕布局**: 这些视频的硬字幕位置与《这就是中国》一致, 现有的字幕区域和人物识别参数直接可用。
+- **存量**: `vvpipe bili-backfill --out ... --work ... --push root@armbian:/mnt/ssd/vvbot/data/index --key ...`,
+  状态在 `<work>/bili_state.json`, 可随时停止和继续。
+- **每日检查**: 更新程序(`vvpipe daemon --bili-mid 1458767615 --bili-work ...`)约每 20 小时检索一次最近 6 天的视频,
+  新的在 armbian 上识别入库, 群里通知。启用前先把电脑上的 `bili_state.json` 拷到 armbian, 避免重复入库。
