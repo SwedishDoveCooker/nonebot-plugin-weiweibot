@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -56,6 +57,8 @@ def download(
         opts["cookiesfrombrowser"] = ("firefox", str(browser_profile), None, None)
     elif cookies is not None:
         opts["cookiefile"] = str(cookies)
+    if deno := os.environ.get("VVPIPE_DENO"):  # without a JS runtime YouTube only lists thumbnails
+        opts["js_runtimes"] = {"deno": {"path": deno}}
     if rate:
         opts["ratelimit"] = rate
     if proxy:
