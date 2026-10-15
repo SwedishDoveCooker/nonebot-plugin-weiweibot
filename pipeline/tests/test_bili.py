@@ -73,11 +73,12 @@ class FakeSession:
 def fakes(monkeypatch, tmp_path):
     calls = {"download": [], "extract": []}
 
-    def fake_download(session, bvid, dest, part_index=0, log=None):
+    def fake_download(session, bvid, dest, part_index=0, log=None, min_height=1000):
         dest.mkdir(parents=True, exist_ok=True)
         f = dest / f"{bvid}_{part_index}.mkv"
         f.write_bytes(b"x")
         calls["download"].append((bvid, part_index))
+        calls.setdefault("floor", {})[bvid] = min_height
         if bvid == "LOWRES":
             raise bf.NoHighQuality("no 1080p")
         if bvid == "BROKEN":
@@ -192,3 +193,21 @@ def test_very_long_videos_are_skipped(fakes):
         log=lambda m: None,
     )
     assert counts["skipped"] == 1 and calls["download"] == []
+
+
+def test_pick_streams_takes_720p_only_when_the_floor_is_lowered():
+    dash = _dash((360, 7, 1), (720, 7, 3))
+    with pytest.raises(bf.NoHighQuality):
+        bf.pick_streams(dash)
+    video, _ = bf.pick_streams(dash, min_height=700)
+    assert video["height"] == 720
+
+
+def test_only_the_approved_videos_may_be_720p(fakes):
+    calls, tmp = fakes
+    state = bi.State.load(tmp / "state.json")
+    bi.run(
+        FakeSession(), [_video("BVA"), _video("BVB")], state, tmp / "out", tmp / "work", None, None,
+        log=lambda m: None, allow_low={"BVA"},
+    )  # fmt: skip
+    assert calls["floor"] == {"BVA": bi.LOW_HEIGHT, "BVB": bf.MIN_HEIGHT}

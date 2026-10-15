@@ -107,6 +107,7 @@ def extract_episode(
     reader: subtitle.Reader,
     force: bool = False,
     log=sys.stderr,
+    min_height: int = MIN_HEIGHT,
 ) -> dict:
     frames_dir, entries_dir = out_dir / "frames", out_dir / "entries"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -116,8 +117,8 @@ def extract_episode(
     if idx_path.exists() and not force:
         return {"ep": ep, "skipped": True}
     height = video_height(video)
-    if height < MIN_HEIGHT:
-        raise LowResolutionError(f"{video.name} is only {height}p; 1080p is required")
+    if height < min_height:
+        raise LowResolutionError(f"{video.name} is only {height}p; {min_height}p is required")
 
     pack_tmp, idx_tmp = pack_path.with_suffix(".pack.tmp"), idx_path.with_suffix(".jsonl.tmp")
     started = time.time()

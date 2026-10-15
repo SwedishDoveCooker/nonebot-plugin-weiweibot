@@ -225,7 +225,7 @@ class Session:
     def parts(self, bvid: str) -> list[dict]:
         return self.json(f"https://api.bilibili.com/x/player/pagelist?bvid={bvid}")["data"]
 
-    def streams(self, bvid: str, cid: int) -> tuple[dict, dict]:
+    def streams(self, bvid: str, cid: int, min_height: int = MIN_HEIGHT) -> tuple[dict, dict]:
         """(video, audio) DASH entries: 1080p H.264 when there is one, never anything smaller."""
         url = (
             "https://api.bilibili.com/x/player/playurl?"
@@ -235,7 +235,7 @@ class Session:
         if data.get("code") != 0:
             raise RuntimeError(f"playurl code {data.get('code')}: {data.get('message')}")
         dash = (data.get("data") or {}).get("dash") or {}
-        return pick_streams(dash)
+        return pick_streams(dash, min_height)
 
     def fetch_file(self, urls: list[str], dest: Path, log=sys.stderr) -> None:
         """Download one stream, resuming a partial file; tries the backup URLs in turn."""
@@ -267,11 +267,11 @@ class Session:
         raise RuntimeError(f"all URLs failed: {last}")
 
 
-def pick_streams(dash: dict) -> tuple[dict, dict]:
-    videos = [v for v in dash.get("video", []) if (v.get("height") or 0) >= MIN_HEIGHT]
+def pick_streams(dash: dict, min_height: int = MIN_HEIGHT) -> tuple[dict, dict]:
+    videos = [v for v in dash.get("video", []) if (v.get("height") or 0) >= min_height]
     if not videos:
         heights = sorted({v.get("height") for v in dash.get("video", [])})
-        raise NoHighQuality(f"no 1080p stream for guests (offered: {heights})")
+        raise NoHighQuality(f"no {min_height}p stream for guests (offered: {heights})")
     # codecid 7 is H.264, which every machine here decodes; then HEVC (12), then AV1 (13)
     videos.sort(
         key=lambda v: ({7: 0, 12: 1, 13: 2}.get(v.get("codecid"), 3), -(v.get("bandwidth") or 0))
@@ -294,14 +294,19 @@ def urls_of(stream: dict) -> list[str]:
 
 
 def download(
-    session: Session, bvid: str, dest_dir: Path, part_index: int = 0, log=sys.stderr
+    session: Session,
+    bvid: str,
+    dest_dir: Path,
+    part_index: int = 0,
+    log=sys.stderr,
+    min_height: int = MIN_HEIGHT,
 ) -> Path:
     """Download part ``part_index`` of a video as <bvid>[_pN].mkv; returns the finished file."""
     from .extract import video_height
 
     parts = session.parts(bvid)
     cid = parts[part_index]["cid"]
-    video, audio = session.streams(bvid, cid)
+    video, audio = session.streams(bvid, cid, min_height)
     dest_dir.mkdir(parents=True, exist_ok=True)
     stem = bvid if part_index == 0 else f"{bvid}_p{part_index + 1}"
     final = dest_dir / f"{stem}.mkv"
@@ -328,7 +333,7 @@ def download(
         check=True,
     )
     height = video_height(tmp)
-    if height < MIN_HEIGHT:
+    if height < min_height:
         tmp.unlink(missing_ok=True)
         raise NoHighQuality(f"{bvid} came out as {height}p")
     os.replace(tmp, final)

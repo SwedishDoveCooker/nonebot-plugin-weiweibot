@@ -106,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, help="stop after this many videos")
     p.add_argument("--relist", action="store_true", help="ignore the cached video list")
     p.add_argument("--list-only", action="store_true")
+    p.add_argument(
+        "--allow-low", default="", help="comma-separated BV ids that may be taken at 720p"
+    )
     p = sub.add_parser(
         "legacy-import", help="add the old nonebot-plugin-weiweibot pictures (assets.tar.gz)"
     )
@@ -180,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             session, videos, state, args.out, args.work,
             FaceMatcher(args.models, args.ref), subtitle.Reader(),
             on_done=pushed, stop_after=args.limit,
+            allow_low={b for b in args.allow_low.split(",") if b},
         )  # fmt: skip
         print(json.dumps(counts))
         return 0

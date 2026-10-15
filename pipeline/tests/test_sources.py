@@ -28,20 +28,19 @@ def test_legacy_import_writes_pack_index_and_source(tmp_path):
             "assets/.gitkeep": b"",
             "assets/你好世界.jpg": b"AAA",
             "assets/你好世界-2.jpg": b"BBBB",
-            "assets/x.jpg": b"C",
+            "assets/乐-3.jpg": b"C",
         },
     )
     out = tmp_path / "idx"
     res = legacy.import_tar(tar, out)
-    assert (
-        res["lines"] == 2 and res["skipped_files"] == 2
-    )  # the dotfile and the 1-character caption
+    # only the dotfile is skipped: one-character captions are real pictures
+    assert res["lines"] == 3 and res["skipped_files"] == 1
     rows = [
         json.loads(line) for line in (out / "entries/ep90000.jsonl").read_text("utf-8").splitlines()
     ]
-    assert [r["text"] for r in rows] == ["你好世界", "你好世界"]
+    assert sorted(r["text"] for r in rows) == ["乐", "你好世界", "你好世界"]
     pack = (out / "frames/ep90000.pack").read_bytes()
-    assert sorted(pack[r["off"] : r["off"] + r["len"]] for r in rows) == [b"AAA", b"BBBB"]
+    assert sorted(pack[r["off"] : r["off"] + r["len"]] for r in rows) == [b"AAA", b"BBBB", b"C"]
     assert all(r["sim"] == -1 and r["ep"] == 90000 for r in rows)
     assert sources.read(out, 90000)["kind"] == "legacy"
     assert legacy.import_tar(tar, out) == {"ep": 90000, "skipped": True}  # idempotent

@@ -19,6 +19,7 @@ from . import bili_fetch as bf
 from . import extract as ex
 from . import sources
 
+LOW_HEIGHT = 700  # the floor for the videos the owner approved at 720p
 MAX_PARTS = 6
 MAX_SECONDS = 3 * 3600
 RETRIES_PER_VIDEO = 3
@@ -70,6 +71,7 @@ def process_video(
     matcher,
     reader,
     log=_log,
+    min_height: int = bf.MIN_HEIGHT,
 ) -> list[int]:
     """Download, index and record one video (all its parts); returns the ids it got."""
     prev = state.get(video.bvid)
@@ -83,10 +85,12 @@ def process_video(
             if len(parts) == 1
             else f"{video.title} P{i + 1} {part.get('part', '')}".strip()
         )
-        file = bf.download(session, video.bvid, work_dir / "dl", part_index=i)
+        file = bf.download(
+            session, video.bvid, work_dir / "dl", part_index=i, min_height=min_height
+        )
         ep = sources.next_id(out_dir)
         log(f"{video.bvid} part {i + 1}/{len(parts)}: extracting as ep{ep}")
-        res = ex.extract_episode(file, ep, out_dir, matcher, reader)
+        res = ex.extract_episode(file, ep, out_dir, matcher, reader, min_height=min_height)
         sources.write(out_dir, ep, "bili", title=title, id=video.bvid, pub=video.pub)
         file.unlink(missing_ok=True)
         ids.append(ep)
@@ -106,6 +110,7 @@ def run(
     on_done=None,
     stop_after: int | None = None,
     log=_log,
+    allow_low: frozenset[str] | set[str] = frozenset(),
 ) -> dict:
     """Process every video that is not done yet. Returns counters."""
     counts = {"done": 0, "lowres": 0, "failed": 0, "skipped": 0}
@@ -117,7 +122,11 @@ def run(
             counts["skipped"] += 1
             continue
         try:
-            ids = process_video(session, video, state, out_dir, work_dir, matcher, reader, log)
+            # a few videos exist only in 720p; the owner has approved those one by one
+            floor = LOW_HEIGHT if video.bvid in allow_low else bf.MIN_HEIGHT
+            ids = process_video(
+                session, video, state, out_dir, work_dir, matcher, reader, log, min_height=floor
+            )
         except bf.NoHighQuality as err:
             state.set(
                 video.bvid,

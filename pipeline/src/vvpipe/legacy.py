@@ -43,7 +43,7 @@ def import_tar(
     ):
         for member in sorted((m for m in tar if m.isfile()), key=lambda m: m.name):
             text = caption(member.name)
-            if not member.name.lower().endswith(".jpg") or len(text) < 2 or "�" in text:
+            if not member.name.lower().endswith(".jpg") or not text or "�" in text:
                 skipped += 1
                 continue
             data = tar.extractfile(member).read()  # type: ignore[union-attr]
