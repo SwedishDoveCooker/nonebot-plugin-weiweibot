@@ -116,6 +116,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--index", type=Path, required=True)
     p.add_argument("--force", action="store_true")
 
+    p = sub.add_parser("fan-fill", help="fill gaps from other uploads, after checking them")
+    p.add_argument("--candidates", type=Path, required=True, help="json {episode: [{bvid, title}]}")
+    p.add_argument("--vv", type=Path, required=True, help="VV's entries.json, to check content")
+    p.add_argument("--bili", type=Path, required=True, help="episodes_bili.json")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--work", type=Path, required=True)
+    p.add_argument("--ref", type=Path, default=DEFAULT_MODELS / "ref.npz")
+    p.add_argument("--push")
+    p.add_argument("--key", type=Path)
+
     p = sub.add_parser("relabel", help="re-file an indexed episode under its real number")
     p.add_argument("--index", type=Path, required=True)
     p.add_argument("--from", dest="old", type=int, required=True)
@@ -200,6 +210,29 @@ def main(argv: list[str] | None = None) -> int:
                 legacy.import_tar(args.tar, args.index, force=args.force), ensure_ascii=False
             )
         )
+        return 0
+    if args.cmd == "fan-fill":
+        from . import bili_fetch as bf
+        from . import fan_fill, sources
+        from .backfill import Push
+
+        cands = {int(k): v for k, v in json.loads(args.candidates.read_text("utf-8")).items()}
+        session = bf.Session()
+        ep_ids = {r["n"]: r["ep_id"] for r in json.loads(args.bili.read_text("utf-8-sig"))}
+        official = {}
+        for ep in cands:  # the official length, for episodes VV does not cover
+            try:
+                url = f"https://api.bilibili.com/pgc/player/web/playurl?ep_id={ep_ids[ep]}&qn=16"
+                official[ep] = session.json(url)["result"]["timelength"] / 1000
+            except Exception:  # noqa: BLE001 - without it only VV's data can vouch for the episode
+                pass
+        push = Push(args.push, args.key) if args.push else None
+        counts = fan_fill.run(
+            cands, session, args.out, args.work, args.vv, official,
+            FaceMatcher(args.models, args.ref), subtitle.Reader(),
+            sources.show_titles(args.bili), push=push,
+        )  # fmt: skip
+        print(json.dumps(counts))
         return 0
     if args.cmd == "relabel":
         from . import sources
