@@ -560,7 +560,13 @@ class VVSearch(Star):
                     doc = json.loads(f.read_text("utf-8"))
                     chunks = [c for c in doc["chunks"] if c.strip()]
                     known = await kb.list_documents(search=doc["file_name"])
-                    if any(getattr(d, "doc_name", None) == doc["file_name"] for d in known):
+                    same = [d for d in known if getattr(d, "doc_name", None) == doc["file_name"]]
+                    if same and doc.get("replace"):  # a corrected version of a document
+                        for d in same:
+                            await kb.delete_document(d.doc_id)
+                        same = []
+                        logger.info(f"vv_search: replacing {doc['file_name']!r}")
+                    if same:
                         logger.info(f"vv_search: {doc['file_name']!r} is already in the knowledge base")
                     else:
                         await kb.upload_document(
