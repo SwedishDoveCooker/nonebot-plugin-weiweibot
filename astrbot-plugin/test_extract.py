@@ -21,6 +21,7 @@ ev.filter = types.SimpleNamespace(
     event_message_type=lambda *a, **k: (lambda f: f),
     llm_tool=lambda *a, **k: (lambda f: f),
     on_astrbot_loaded=lambda *a, **k: (lambda f: f),
+    on_llm_request=lambda *a, **k: (lambda f: f),
     EventMessageType=types.SimpleNamespace(GROUP_MESSAGE=1),
 )
 comp = types.ModuleType("astrbot.api.message_components")
@@ -195,5 +196,40 @@ check(
 )
 check("picture without source", mod.VVSearch._pic(event, "/tmp/a.jpg", {"detail": ""}), [("image", "/tmp/a.jpg")])
 check("picture without a hit", mod.VVSearch._pic(event, "/tmp/a.jpg", None), [("image", "/tmp/a.jpg")])
+
+
+
+# the glossary: slang in the recent chat is explained to the model
+g = {
+    "大师兄": [{"page": "英雄联盟/赛事梗", "text": "Doublelift 的外号"}],
+    "鱼传家": [{"page": "英雄联盟/赛事梗", "text": "传送回塔被单杀"}, {"page": "别处", "text": "另一个意思"}],
+}
+hits = mod.glossary_find("这波属于是大师兄了, 鱼传家", g)
+check("glossary finds terms in order", [t for t, _ in hits], ["大师兄", "鱼传家"])
+check("glossary finds nothing in plain chat", mod.glossary_find("今天吃什么", g), [])
+note = mod.glossary_note(hits)
+check("note names the term and its page", "大师兄: Doublelift 的外号(《英雄联盟/赛事梗》)" in note, True)
+check("note lists two meanings of an ambiguous term", "传送回塔被单杀(《英雄联盟/赛事梗》) / 另一个意思(《别处》)" in note, True)
+
+
+async def hook_cases():
+    plugin = mod.VVSearch.__new__(mod.VVSearch)
+    plugin.glossary, plugin.glossary_limit = g, 4
+    plugin._log = defaultdict(list, {"grp": [(time.time(), "u1", "刚才有人说鱼传家")]})
+    ev = types.SimpleNamespace(get_group_id=lambda: "grp", message_str="大师兄是什么意思")
+    req = types.SimpleNamespace(system_prompt="你是助手")
+    await plugin.add_glossary(ev, req)
+    plain = types.SimpleNamespace(system_prompt="你是助手")
+    await plugin.add_glossary(types.SimpleNamespace(get_group_id=lambda: "", message_str="你好"), plain)
+    plugin.glossary = {}
+    off = types.SimpleNamespace(system_prompt="x")
+    await plugin.add_glossary(ev, off)
+    return req.system_prompt, plain.system_prompt, off.system_prompt
+
+
+added, untouched, disabled = asyncio.run(hook_cases())
+check("hook adds hints from the message and the recent chat", ("大师兄:" in added and "鱼传家:" in added and added.startswith("你是助手")), True)
+check("hook leaves chat without slang alone", untouched, "你是助手")
+check("hook does nothing without a glossary", disabled, "x")
 
 sys.exit(1 if bad else 0)

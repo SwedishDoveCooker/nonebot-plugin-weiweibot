@@ -34,5 +34,15 @@
     "description": "导入知识库用的嵌入模型提供商 ID",
     "type": "string",
     "default": "bge-local"
+  },
+  "glossary": {
+    "description": "聊天时把群里提到的梗/黑话的解释告诉模型",
+    "type": "bool",
+    "default": true
+  },
+  "glossary_terms": {
+    "description": "每次最多附带几个梗的解释",
+    "type": "int",
+    "default": 4
   }
 }

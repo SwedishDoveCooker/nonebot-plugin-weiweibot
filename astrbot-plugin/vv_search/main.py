@@ -28,6 +28,7 @@ from astrbot.api.star import Context, Star
 CONFIG = os.environ.get("VV_PLUGIN_CONFIG", "/mnt/ssd/astrbot/home/data/vv_plugin.json")
 TMP = os.environ.get("VV_TMP", "/mnt/ssd/astrbot/home/data/temp")
 KB_INBOX = Path(os.environ.get("VV_KB_INBOX", "/mnt/ssd/astrbot/home/data/kb_inbox"))
+GLOSSARY_PATH = Path(os.environ.get("VV_GLOSSARY", "/mnt/ssd/astrbot/home/data/glossary.json"))
 COOLDOWN_S = 8
 ACC_TTL_S = 300
 ACC_MAX = 30
@@ -64,6 +65,29 @@ LLM_TIMEOUT_S = 60
 CONTEXT_LINES = 10  # recent messages shown to the model, so a request can span several messages
 CONTEXT_TTL_S = 120
 LABELS = "甲乙丙丁戊己庚辛"
+
+
+def glossary_find(text: str, glossary: dict, limit: int = 4) -> list[tuple[str, list[dict]]]:
+    """Glossary terms found in ``text``: the longest win, no overlaps, at most ``limit``."""
+    taken = [False] * len(text)
+    hits: list[tuple[int, str]] = []
+    for n in sorted({len(t) for t in glossary}, reverse=True):
+        for i in range(len(text) - n + 1):
+            term = text[i : i + n]
+            if term in glossary and not any(taken[i : i + n]):
+                hits.append((i, term))
+                taken[i : i + n] = [True] * n
+    hits.sort()
+    return [(t, glossary[t]) for _, t in hits[:limit]]
+
+
+def glossary_note(hits: list[tuple[str, list[dict]]]) -> str:
+    """The lines handed to the model so it understands the slang people just used."""
+    lines = []
+    for term, defs in hits:
+        meanings = " / ".join(f"{d['text']}(《{d['page']}》)" for d in defs[:2])
+        lines.append(f"- {term}: {meanings}")
+    return "【群里刚提到的梗/黑话, 仅供你理解语境, 不要生硬地复述解释】\n" + "\n".join(lines)
 
 
 def clean_quote(raw: str) -> str | None:
@@ -149,6 +173,14 @@ class VVSearch(Star):
         self.owners = set(cfg.get("owners", []))
         llm = cfg.get("llm") or {}
         self.kb_embedding = settings.get("kb_embedding_provider") or "bge-local"
+        self.glossary: dict = {}
+        self.glossary_limit = int(settings.get("glossary_terms", 4))
+        if settings.get("glossary", True) and GLOSSARY_PATH.is_file():
+            try:
+                self.glossary = json.loads(GLOSSARY_PATH.read_text("utf-8"))
+                logger.info(f"vv_search: glossary of {len(self.glossary)} terms loaded")
+            except (OSError, ValueError) as err:
+                logger.warning(f"vv_search: glossary not loaded: {err!r}")
         self.proactive = bool(settings.get("proactive", True))
         self.mode = settings.get("mode", "agent")  # agent: the model searches and picks; judge: model names the quote
         self.min_score = float(settings.get("min_score", LLM_MIN_SCORE))
@@ -339,6 +371,21 @@ class VVSearch(Star):
             return "图片发送失败"
         await event.send(self._pic(event, path, hits[0]))
         return f"已发送图片: {hits[0]['text']}"
+
+    @filter.on_llm_request()
+    async def add_glossary(self, event: AstrMessageEvent, req):
+        """Tell the model what the slang in the recent chat means (system prompt, not saved)."""
+        if not self.glossary:
+            return
+        try:
+            gid = event.get_group_id() or ""
+            recent = [m[2] for m in self._log.get(gid, [])[-4:]] if gid else []
+            text = "\n".join([*recent, event.message_str or ""])[-600:]
+            hits = glossary_find(text, self.glossary, self.glossary_limit)
+            if hits:
+                req.system_prompt = (req.system_prompt or "") + "\n\n" + glossary_note(hits)
+        except Exception as err:  # noqa: BLE001 - never break a chat reply over a hint
+            logger.warning(f"vv_search: glossary hint failed: {err!r}")
 
     # ---- knowledge base inbox ------------------------------------------------------------
     @filter.on_astrbot_loaded()
