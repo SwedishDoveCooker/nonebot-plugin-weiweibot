@@ -232,4 +232,36 @@ check("hook adds hints from the message and the recent chat", ("大师兄:" in a
 check("hook leaves chat without slang alone", untouched, "你是助手")
 check("hook does nothing without a glossary", disabled, "x")
 
+
+
+# chiming in: what the model says is cleaned, limited, and remembered as the bot's own line
+for raw, want in [
+    ("无", None), ("无。", None), ("", None), ("  ", None),
+    ("哈哈这个梗我懂", "哈哈这个梗我懂"),
+    ("我: 是的是的", "是的是的"),
+    ("“确实”", "确实"),
+    ("第一行\n第二行", "第一行"),
+    ("无语了真的", "无语了真的"),  # a sentence that merely starts with 无 is not "stay quiet"
+]:  # fmt: skip
+    check(f"clean_reply {raw!r}", mod.clean_reply(raw), want)
+long = "这是一句很长很长的话" * 10 + "。后面的不要" * 5
+check("a long reply is cut at a sentence end", len(mod.clean_reply(long)) <= 80, True)
+
+chat = mod.VVSearch.__new__(mod.VVSearch)
+chat._log = defaultdict(list)
+chat._texts = defaultdict(deque)
+chat.chime_cap = 2
+check("first speaker is 甲", chat._remember("g", "u1", "有人吗"), ["甲: 有人吗"])
+check("the bot is 我", chat._remember("g", mod.BOT, "在的"), ["甲: 有人吗", "我: 在的"])
+check("next speaker is 乙", chat._remember("g", "u2", "你好"), ["甲: 有人吗", "我: 在的", "乙: 你好"])
+check("not capped before it spoke", chat._text_capped("g"), False)
+chat._texts["g"].append(time.time())
+check("capped right after speaking (cooldown)", chat._text_capped("g"), True)
+chat._texts["g"].clear()
+chat._texts["g"].extend([time.time() - mod.TEXT_COOLDOWN_S - 1, time.time() - mod.TEXT_COOLDOWN_S - 2])
+check("capped after the window limit", chat._text_capped("g"), True)
+chat._texts["g"].clear()
+chat._texts["g"].append(time.time() - mod.TEXT_WINDOW_S - 1)
+check("old replies stop counting", chat._text_capped("g"), False)
+
 sys.exit(1 if bad else 0)

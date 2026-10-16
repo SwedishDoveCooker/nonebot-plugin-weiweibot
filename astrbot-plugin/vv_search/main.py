@@ -52,11 +52,19 @@ SYS_ASK = (
     "例:\n甲: 今天中午吃啥\n→无"
 )
 SYS_AGENT = (
-    "你是QQ群里的一个机器人,平时只旁观。下面是群里最近的聊天记录(旧→新)。\n"
-    "只有当最新的消息之后,群友在向大家要某句台词或某个梗的表情包/图片时(要的内容可能分几条消息说完),"
-    "你才出手:先用 find_meme 按台词搜索,看候选,挑最贴切的用 send_meme 发出;候选都不贴切就什么也别发。\n"
-    "其他任何情况(闲聊、讨论、只是提到图、话没说完)都不要调用工具,只回复 无。"
+    "你是QQ群里的一个群友, 平时爱看热闹。下面是群里最近的聊天记录(旧→新, “我”是你自己)。\n"
+    "先判断最新一条之后你要不要开口:\n"
+    "- 有人在向大家要某句台词或梗的表情包/图片(话可能分几条说完), 而且你有发图的能力: "
+    "先用 find_meme 按台词搜索, 挑最贴切的用 send_meme 发出; 候选都不贴切就别发; 发完图不用再说话。\n"
+    "- 有人在跟你说话、问你问题, 或者聊到了你懂的梗、《这就是中国》节目的内容, 而且你有接话的能力: "
+    "直接回一句短话接上(口语, 不超过40个字, 不要引号和前缀, 不要说“作为AI”)。"
+    "不熟悉的梗或节目内容, 先用 lookup_knowledge 查一下再说。\n"
+    "- 其他情况(普通闲聊、话没说完、已经有人回答了、你刚说过话、拿不准)保持安静, 只输出: 无\n"
+    "宁可少说, 也不要打断别人, 更不要重复你刚说过的话。"
 )
+TEXT_COOLDOWN_S = 25  # between two chat replies in one group
+TEXT_MAX = 6  # chat replies per group in the window below
+TEXT_WINDOW_S = 600
 LLM_MIN_SCORE = 0.6  # a guess from the model needs a clearly matching picture before it speaks
 LLM_PER_MIN = 30
 REPLY_WINDOW_S = 600  # at most REPLY_MAX unsolicited pictures per group in this window
@@ -65,6 +73,19 @@ LLM_TIMEOUT_S = 60
 CONTEXT_LINES = 10  # recent messages shown to the model, so a request can span several messages
 CONTEXT_TTL_S = 120
 LABELS = "甲乙丙丁戊己庚辛"
+BOT = "__bot__"  # the speaker label of the bot itself in the chat log
+
+
+def clean_reply(raw: str) -> str | None:
+    """The sentence to say, or None when the model decided to stay quiet."""
+    text = (raw or "").strip().splitlines()[0].strip() if (raw or "").strip() else ""
+    text = re.sub(r"^(我|回复|回答)\s*[:：]\s*", "", text).strip(" \"'“”’「」")
+    if not text or text.startswith("无") and len(text) <= 3:
+        return None
+    if len(text) > 80:
+        cut = max(text.rfind(c, 0, 80) for c in "。！？!?~…")
+        text = text[: cut + 1] if cut > 20 else text[:80]
+    return text
 
 
 def glossary_find(text: str, glossary: dict, limit: int = 4) -> list[tuple[str, list[dict]]]:
@@ -181,6 +202,8 @@ class VVSearch(Star):
                 logger.info(f"vv_search: glossary of {len(self.glossary)} terms loaded")
             except (OSError, ValueError) as err:
                 logger.warning(f"vv_search: glossary not loaded: {err!r}")
+        self.chime_in = bool(settings.get("chime_in", True))
+        self.chime_cap = int(settings.get("chime_per_10min", TEXT_MAX))
         self.proactive = bool(settings.get("proactive", True))
         self.mode = settings.get("mode", "agent")  # agent: the model searches and picks; judge: model names the quote
         self.min_score = float(settings.get("min_score", LLM_MIN_SCORE))
@@ -192,6 +215,7 @@ class VVSearch(Star):
         self.judge = AstrJudge(context, pid, fallback=local) if pid else local
         self._llm_calls: dict[str, deque[float]] = defaultdict(deque)
         self._replies: dict[str, deque[float]] = defaultdict(deque)
+        self._texts: dict[str, deque[float]] = defaultdict(deque)
         self._log: dict[str, list[tuple[float, str, str]]] = defaultdict(list)  # group -> (time, who, text)
         os.makedirs(TMP, exist_ok=True)
 
@@ -248,9 +272,9 @@ class VVSearch(Star):
         log = [m for m in self._log[gid] if now - m[0] < CONTEXT_TTL_S]
         log.append((now, sender, " ".join(text.split())))  # one line each: nobody can forge a speaker
         self._log[gid] = log = log[-CONTEXT_LINES:]
-        who: dict[str, str] = {}
+        who: dict[str, str] = {BOT: "我"}
         for _, s, _ in log:
-            who.setdefault(s, LABELS[len(who) % len(LABELS)])
+            who.setdefault(s, LABELS[(len(who) - 1) % len(LABELS)])
         return [f"{who[s]}: {t}" for _, s, t in log]
 
     def _reply_capped(self, gid: str) -> bool:
@@ -261,12 +285,27 @@ class VVSearch(Star):
             sent.popleft()
         return len(sent) >= self.reply_cap
 
-    async def _run_agent(self, event: AstrMessageEvent, gid: str, lines: list[str]) -> bool:
-        """Let the model run the whole thing: decide, search, pick a picture, send it."""
+    def _text_capped(self, gid: str) -> bool:
+        """Has the bot said enough in this group lately (window cap and a short cooldown)?"""
+        now = time.time()
+        said = self._texts[gid]
+        while said and now - said[0] > TEXT_WINDOW_S:
+            said.popleft()
+        return len(said) >= self.chime_cap or (bool(said) and now - said[-1] < TEXT_COOLDOWN_S)
+
+    async def _run_agent(
+        self,
+        event: AstrMessageEvent,
+        gid: str,
+        lines: list[str],
+        pictures: bool = True,
+        text: bool = True,
+    ) -> bool:
+        """Let the model run the whole thing: stay quiet, send a picture, or say a short line."""
         from astrbot.core.agent.tool import FunctionTool, ToolSet
 
         now = time.time()
-        if now - self._last.get(gid, 0) < COOLDOWN_S:
+        if now - self._last.get(gid, 0) < COOLDOWN_S or not (pictures or text):
             return False
         calls = self._llm_calls[gid]
         while calls and now - calls[0] > 60:
@@ -277,57 +316,88 @@ class VVSearch(Star):
 
         cands: dict[int, dict] = {}
         sent: list[dict] = []
-
-        async def find_meme(ev, query: str):
-            hits = await self._json("/api/search", q=str(query)[:60], k=5) or []
-            cands.clear()
-            cands.update({i + 1: h for i, h in enumerate(hits)})
-            if not cands:
-                return "没有找到匹配的图片"
-            return "\n".join(
-                f"{i}. {h['text']} ({'字面匹配' if h['source'] == 'literal' else '相似度%.2f' % h['score']})"
-                for i, h in cands.items()
-            )
-
-        async def send_meme(ev, choice: int):
-            hit = cands.get(int(choice))
-            if hit is None or sent:
-                return "没有这个编号, 或者已经发过了"
-            path = await self._image_path(hit["key"])
-            if not path:
-                return "图片发送失败"
-            await ev.send(self._pic(ev, path, hit))
-            sent.append(hit)
-            self._last[gid] = time.time()
-            self._replies[gid].append(time.time())
-            return "已发送"
-
         obj = {"type": "object", "properties": {}, "required": []}
-        tools = ToolSet(
-            tools=[
+        tools: list = []
+
+        async def lookup_knowledge(ev, query: str):
+            return await self._kb_lookup(str(query)[:80], top=3, limit=300)
+
+        tools.append(
+            FunctionTool(
+                name="lookup_knowledge",
+                description="在梗和黑话的知识库里查一个词或一件事, 返回相关的解释段落",
+                parameters={
+                    **obj,
+                    "properties": {"query": {"type": "string", "description": "要查的词或问题"}},
+                    "required": ["query"],
+                },
+                handler=lookup_knowledge,
+            )
+        )
+
+        if pictures:
+
+            async def find_meme(ev, query: str):
+                hits = await self._json("/api/search", q=str(query)[:60], k=5) or []
+                cands.clear()
+                cands.update({i + 1: h for i, h in enumerate(hits)})
+                if not cands:
+                    return "没有找到匹配的图片"
+                return "\n".join(
+                    f"{i}. {h['text']} ({'字面匹配' if h['source'] == 'literal' else '相似度%.2f' % h['score']})"
+                    for i, h in cands.items()
+                )
+
+            async def send_meme(ev, choice: int):
+                hit = cands.get(int(choice))
+                if hit is None or sent:
+                    return "没有这个编号, 或者已经发过了"
+                path = await self._image_path(hit["key"])
+                if not path:
+                    return "图片发送失败"
+                await ev.send(self._pic(ev, path, hit))
+                sent.append(hit)
+                self._last[gid] = time.time()
+                self._replies[gid].append(time.time())
+                return "已发送"
+
+            tools += [
                 FunctionTool(
                     name="find_meme",
                     description="按台词原文搜索《这就是中国》的图片, 返回编号候选",
-                    parameters={**obj, "properties": {"query": {"type": "string", "description": "想找的那句台词"}}, "required": ["query"]},
+                    parameters={
+                        **obj,
+                        "properties": {"query": {"type": "string", "description": "想找的那句台词"}},
+                        "required": ["query"],
+                    },
                     handler=find_meme,
                 ),
                 FunctionTool(
                     name="send_meme",
                     description="把 find_meme 返回的某个编号的图片发到群里",
-                    parameters={**obj, "properties": {"choice": {"type": "integer", "description": "候选编号"}}, "required": ["choice"]},
+                    parameters={
+                        **obj,
+                        "properties": {"choice": {"type": "integer", "description": "候选编号"}},
+                        "required": ["choice"],
+                    },
                     handler=send_meme,
                 ),
             ]
-        )
+
+        can = [x for x, ok in (("发图", pictures), ("接话", text)) if ok]
+        system = SYS_AGENT + "\n当前你有的能力: " + "、".join(can) + "。"
+        hits = glossary_find("\n".join(lines)[-600:], self.glossary, self.glossary_limit)
+        if hits:
+            system += "\n\n" + glossary_note(hits)
         try:
-            await asyncio.wait_for(
+            resp = await asyncio.wait_for(
                 self.context.tool_loop_agent(
                     event=event,
                     chat_provider_id=self.provider_id,
                     prompt="\n".join(lines) + "\n→",
-                    system_prompt=SYS_AGENT,
-                    tools=tools,
-                    max_steps=4,
+                    system_prompt=system,
+                    tools=ToolSet(tools=tools),
+                    max_steps=5,
                 ),
                 LLM_TIMEOUT_S,
             )
@@ -337,7 +407,16 @@ class VVSearch(Star):
         if sent:
             self._log[gid] = []
             logger.info(f"vv_search agent sent {sent[0]['text']!r} ({sent[0]['source']}, {sent[0]['score']:.2f})")
-        return bool(sent)
+            return True
+        say = clean_reply(getattr(resp, "completion_text", "") or "") if text else None
+        if say is None or self._text_capped(gid):
+            return False
+        await event.send(event.plain_result(say))
+        self._texts[gid].append(time.time())
+        self._last[gid] = time.time()
+        self._remember(gid, BOT, say)  # so the next turn knows what it just said
+        logger.info(f"vv_search agent said {say!r}")
+        return True
     async def _ask_model(self, gid: str, lines: list[str]) -> str | None:
         """Let the local model decide whether the group is asking for a picture (rate limited)."""
         now = time.time()
@@ -624,11 +703,19 @@ class VVSearch(Star):
         if not self.proactive or self.judge is None or not 2 <= len(text) <= 80:
             return
         gid = event.get_group_id() or event.get_sender_id()
-        if self._reply_capped(gid):
-            return
         lines = self._remember(gid, event.get_sender_id(), text)
         if self.mode == "agent" and self.provider_id:
-            await self._run_agent(event, gid, lines)  # the tool sends the picture itself
+            # AstrBot answers messages addressed to the bot by itself; do not speak twice
+            addressed = bool(getattr(event, "is_at_or_wake_command", False))
+            await self._run_agent(
+                event,
+                gid,
+                lines,
+                pictures=not self._reply_capped(gid),
+                text=self.chime_in and not addressed and not self._text_capped(gid),
+            )  # the tools send pictures; a short reply is sent by _run_agent itself
+            return
+        if self._reply_capped(gid):
             return
         query = await self._ask_model(gid, lines)
         if query is None or self._cooling(event):

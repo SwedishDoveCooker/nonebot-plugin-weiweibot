@@ -44,5 +44,15 @@
     "description": "每次最多附带几个梗的解释",
     "type": "int",
     "default": 4
+  },
+  "chime_in": {
+    "description": "没人叫它时, 也会在合适的时候主动接一句话(由模型判断)",
+    "type": "bool",
+    "default": true
+  },
+  "chime_per_10min": {
+    "description": "每个群 10 分钟内最多主动接几句话",
+    "type": "int",
+    "default": 6
   }
 }
