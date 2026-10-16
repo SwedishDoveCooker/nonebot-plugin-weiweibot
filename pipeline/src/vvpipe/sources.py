@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 SHOW_MAX_EP = 9999
@@ -88,3 +89,39 @@ def sync_show(index_dir: Path, bili_json: Path) -> int:
         if ep <= SHOW_MAX_EP and ep in titles:
             n += write(index_dir, ep, "ztjzg", title=titles[ep])
     return n
+
+
+def relabel(index_dir: Path, old: int, new: int) -> int:
+    """Re-file an indexed episode under another number (it turned out to be a different episode).
+
+    Rewrites the ``ep`` of every line, copies pack and vectors to the new name, then removes the
+    old files, index first so the bot never lists a half-moved episode. Returns the line count.
+    """
+    entries, frames, vectors = (index_dir / d for d in ("entries", "frames", "vectors"))
+    old_name, new_name = f"ep{old:04d}", f"ep{new:04d}"
+    if (entries / f"{new_name}.jsonl").exists():
+        raise FileExistsError(f"episode {new} is already in the index")
+    rows = [
+        json.loads(line)
+        for line in (entries / f"{old_name}.jsonl").read_text("utf-8").splitlines()
+        if line.strip()
+    ]
+    for row in rows:
+        row["ep"] = new
+    for folder, suffix in ((frames, ".pack"), (vectors, ".f16")):
+        src = folder / f"{old_name}{suffix}"
+        if src.exists():
+            tmp = folder / f"{new_name}{suffix}.tmp"
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, folder / f"{new_name}{suffix}")
+    tmp = entries / f"{new_name}.jsonl.tmp"
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+    os.replace(tmp, entries / f"{new_name}.jsonl")  # the new episode appears only now
+    for p in (
+        entries / f"{old_name}.jsonl",
+        frames / f"{old_name}.pack",
+        vectors / f"{old_name}.f16",
+        path(index_dir, old),
+    ):
+        p.unlink(missing_ok=True)
+    return len(rows)

@@ -3,6 +3,8 @@ import json
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from vvpipe import legacy, sources
 
 
@@ -82,3 +84,30 @@ def test_sync_show_titles(tmp_path):
     assert sources.sync_show(tmp_path, bili) == 1  # 351 has no title, 90000 is not the show
     assert sources.read(tmp_path, 352) == {"kind": "ztjzg", "title": "中国社科研究的进展"}
     assert sources.sync_show(tmp_path, bili) == 0
+
+
+def test_relabel_moves_an_episode_to_its_real_number(tmp_path):
+    for d in ("entries", "frames", "vectors"):
+        (tmp_path / d).mkdir()
+    rows = [
+        {"ep": 253, "t": 1, "text": "甲", "off": 0, "len": 3},
+        {"ep": 253, "t": 2, "text": "乙", "off": 3, "len": 2},
+    ]
+    (tmp_path / "entries/ep0253.jsonl").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8"
+    )
+    (tmp_path / "frames/ep0253.pack").write_bytes(b"AAABB")
+    (tmp_path / "vectors/ep0253.f16").write_bytes(b"VV")
+    sources.write(tmp_path, 253, "ztjzg", title="旧标题")
+    assert sources.relabel(tmp_path, 253, 198) == 2
+    moved = [
+        json.loads(line)
+        for line in (tmp_path / "entries/ep0198.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert [r["ep"] for r in moved] == [198, 198] and [r["text"] for r in moved] == ["甲", "乙"]
+    assert (tmp_path / "frames/ep0198.pack").read_bytes() == b"AAABB"
+    assert (tmp_path / "vectors/ep0198.f16").read_bytes() == b"VV"
+    assert not list(tmp_path.rglob("ep0253*")) and not list(tmp_path.rglob("*.tmp"))
+    (tmp_path / "entries/ep0300.jsonl").write_text("{}\n")
+    with pytest.raises(FileExistsError):
+        sources.relabel(tmp_path, 198, 300)  # never overwrite an existing episode

@@ -116,6 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--index", type=Path, required=True)
     p.add_argument("--force", action="store_true")
 
+    p = sub.add_parser("relabel", help="re-file an indexed episode under its real number")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--from", dest="old", type=int, required=True)
+    p.add_argument("--to", dest="new", type=int, required=True)
+
     p = sub.add_parser(
         "sources-sync", help="write source records (title of each episode of the show)"
     )
@@ -195,6 +200,11 @@ def main(argv: list[str] | None = None) -> int:
                 legacy.import_tar(args.tar, args.index, force=args.force), ensure_ascii=False
             )
         )
+        return 0
+    if args.cmd == "relabel":
+        from . import sources
+
+        print(json.dumps({"lines": sources.relabel(args.index, args.old, args.new)}))
         return 0
     if args.cmd == "sources-sync":
         from . import sources
