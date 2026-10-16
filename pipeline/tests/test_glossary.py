@@ -97,3 +97,23 @@ def test_more_passes_catch_what_one_pass_missed():
 
     out = glossary.filter_generic(g, ask, batch=4, passes=2)
     assert len(out) == 3
+
+
+def test_confirm_drops_needs_a_quorum_of_votes():
+    g = {t: [{"page": "p", "text": f"{t}的解释文字很长很长"}] for t in ("甲", "乙", "丙")}
+    # every pass sees the three terms in some order; the model always flags "甲" and flags "乙" once
+    seen = {"calls": 0}
+
+    def ask(system, user):
+        seen["calls"] += 1
+        rows = [line.split(" | ") for line in user.splitlines()]
+        flagged = [r[0] for r in rows if r[1] == "甲" or (r[1] == "乙" and seen["calls"] == 1)]
+        return "删除: " + (",".join(flagged) or "无")
+
+    assert glossary.confirm_drops(g, ["甲", "乙", "丙", "不在词典里"], ask, passes=3, quorum=2) == {
+        "甲"
+    }
+
+
+def test_stop_terms_cover_the_usual_chat_fillers():
+    assert {"哈哈哈", "无语", "你说得对", "晚安"} <= glossary.STOP_TERMS

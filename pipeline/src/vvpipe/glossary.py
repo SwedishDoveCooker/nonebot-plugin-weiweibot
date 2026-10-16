@@ -221,3 +221,68 @@ def filter_generic(
                     f"pass {n + 1}: {start + len(chunk)}/{len(terms)} dropped so far {len(dropped)}"
                 )
     return {t: d for t, d in glossary.items() if t not in dropped}
+
+
+# Chat fillers the model sometimes lets through; they must never trigger an explanation.
+STOP_TERMS = frozenset(
+    [
+        "哈哈哈",
+        "哈哈哈哈",
+        "哈哈哈哈哈",
+        "无语",
+        "你说得对",
+        "晚安",
+        "早安",
+        "加班",
+        "吃火锅",
+        "行吧",
+        "好的",
+        "谢谢",
+        "对不起",
+        "没问题",
+        "不知道",
+        "真的吗",
+        "是吗",
+        "好吧",
+        "可以",
+        "不行",
+        "没事",
+        "厉害",
+        "牛逼",
+        "笑死",
+        "太强了",
+        "怎么了",
+        "为什么",
+        "什么意思",
+    ]
+)
+
+
+def confirm_drops(
+    glossary: dict,
+    candidates: Iterable[str],
+    ask,
+    passes: int = 3,
+    quorum: int = 2,
+    batch: int = 60,
+) -> set[str]:
+    """Ask again about flagged terms; only those flagged ``quorum`` times are really dropped."""
+    import random
+
+    cands = sorted(set(candidates) & set(glossary))
+    votes = dict.fromkeys(cands, 0)
+    rng = random.Random(7)
+    for n in range(passes):
+        order = cands[:]
+        if n:
+            rng.shuffle(order)
+        for start in range(0, len(order), batch):
+            chunk = order[start : start + batch]
+            rows = [f"{i} | {t} | {glossary[t][0]['text'][:30]}" for i, t in enumerate(chunk)]
+            try:
+                answer = ask(FILTER_SYSTEM, "\n".join(rows))
+            except Exception:  # noqa: BLE001 - no answer is no vote
+                continue
+            for i in parse_numbers(answer, len(chunk)):
+                votes[chunk[i]] += 1
+    return {t for t, v in votes.items() if v >= quorum}
