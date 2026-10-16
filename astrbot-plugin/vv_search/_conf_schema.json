@@ -54,5 +54,10 @@
     "description": "每个群 10 分钟内最多主动接几句话",
     "type": "int",
     "default": 6
+  },
+  "vision": {
+    "description": "群里有人发图时, 把图片也交给模型看(会多花一些 token)",
+    "type": "bool",
+    "default": true
   }
 }

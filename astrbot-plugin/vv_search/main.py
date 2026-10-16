@@ -5,7 +5,8 @@ lives in the Go services on the same machine. This plugin only speaks QQ through
 calls their local HTTP API (127.0.0.1:8770), so either front-end can hold the QQ connection.
 
 Commands: /help /vv /r /acc (then a number) and, for the owner, /auth /authadd /go /status.
-Without being addressed, a local model reads the recent chat and answers picture requests,\neven ones spread over several messages.
+Without being addressed, a local model reads the recent chat and answers picture requests,
+even ones spread over several messages.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ CONFIG = os.environ.get("VV_PLUGIN_CONFIG", "/mnt/ssd/astrbot/home/data/vv_plugi
 TMP = os.environ.get("VV_TMP", "/mnt/ssd/astrbot/home/data/temp")
 KB_INBOX = Path(os.environ.get("VV_KB_INBOX", "/mnt/ssd/astrbot/home/data/kb_inbox"))
 GLOSSARY_PATH = Path(os.environ.get("VV_GLOSSARY", "/mnt/ssd/astrbot/home/data/glossary.json"))
+PERSONA_PATH = Path(os.environ.get("VV_PERSONA", "/mnt/ssd/astrbot/home/data/persona.txt"))
+USAGE_PATH = Path(os.environ.get("VV_USAGE", "/mnt/ssd/astrbot/home/data/usage.json"))
 COOLDOWN_S = 8
 ACC_TTL_S = 300
 ACC_MAX = 30
@@ -52,7 +55,7 @@ SYS_ASK = (
     "例:\n甲: 今天中午吃啥\n→无"
 )
 SYS_AGENT = (
-    "你是QQ群里的一个群友, 平时爱看热闹。下面是群里最近的聊天记录(旧→新, “我”是你自己)。\n"
+    "你在一个QQ群里, 上面的人设就是你。下面是群里最近的聊天记录(旧→新, “我”是你自己)。\n"
     "先判断最新一条之后你要不要开口:\n"
     "- 有人在向大家要某句台词或梗的表情包/图片(话可能分几条说完), 而且你有发图的能力: "
     "先用 find_meme 按台词搜索, 挑最贴切的用 send_meme 发出; 候选都不贴切就别发; 发完图不用再说话。\n"
@@ -194,6 +197,12 @@ class VVSearch(Star):
         self.owners = set(cfg.get("owners", []))
         llm = cfg.get("llm") or {}
         self.kb_embedding = settings.get("kb_embedding_provider") or "bge-local"
+        try:
+            self.persona = PERSONA_PATH.read_text("utf-8").strip() if PERSONA_PATH.is_file() else ""
+        except OSError:
+            self.persona = ""
+        self.vision = bool(settings.get("vision", True))
+        self.usage_path = USAGE_PATH
         self.glossary: dict = {}
         self.glossary_limit = int(settings.get("glossary_terms", 4))
         if settings.get("glossary", True) and GLOSSARY_PATH.is_file():
@@ -285,6 +294,40 @@ class VVSearch(Star):
             sent.popleft()
         return len(sent) >= self.reply_cap
 
+    def _count(self, kind: str, usage=None) -> None:
+        """Tally model calls (and the tokens of the last step of each) per day, for /usage."""
+        day = time.strftime("%Y-%m-%d")
+        try:
+            data = json.loads(self.usage_path.read_text("utf-8")) if self.usage_path.is_file() else {}
+        except (OSError, ValueError):
+            data = {}
+        row = data.setdefault(day, {}).setdefault(kind, {"calls": 0, "in": 0, "out": 0})
+        row["calls"] += 1
+        if usage is not None:
+            row["in"] += int(getattr(usage, "input_other", 0) or 0) + int(getattr(usage, "input_cached", 0) or 0)
+            row["out"] += int(getattr(usage, "output", 0) or 0)
+        for old in sorted(data)[:-14]:  # two weeks are plenty
+            del data[old]
+        try:
+            tmp = self.usage_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+            tmp.replace(self.usage_path)
+        except OSError as err:
+            logger.warning(f"vv_search: usage not saved: {err!r}")
+
+    async def _images(self, event: AstrMessageEvent, limit: int = 2) -> list[str]:
+        """Local paths of the pictures in a message (at most ``limit``)."""
+        out: list[str] = []
+        for comp in getattr(event.message_obj, "message", None) or []:
+            if isinstance(comp, Comp.Image):
+                try:
+                    out.append(await comp.convert_to_file_path())
+                except Exception as err:  # noqa: BLE001 - a picture that cannot be fetched is skipped
+                    logger.warning(f"vv_search: picture not fetched: {err!r}")
+                if len(out) >= limit:
+                    break
+        return out
+
     def _text_capped(self, gid: str) -> bool:
         """Has the bot said enough in this group lately (window cap and a short cooldown)?"""
         now = time.time()
@@ -300,6 +343,7 @@ class VVSearch(Star):
         lines: list[str],
         pictures: bool = True,
         text: bool = True,
+        image_urls: list[str] | None = None,
     ) -> bool:
         """Let the model run the whole thing: stay quiet, send a picture, or say a short line."""
         from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -385,7 +429,8 @@ class VVSearch(Star):
             ]
 
         can = [x for x, ok in (("发图", pictures), ("接话", text)) if ok]
-        system = SYS_AGENT + "\n当前你有的能力: " + "、".join(can) + "。"
+        system = (self.persona + "\n\n" if self.persona else "") + SYS_AGENT
+        system += "\n当前你有的能力: " + "、".join(can) + "。"
         hits = glossary_find("\n".join(lines)[-600:], self.glossary, self.glossary_limit)
         if hits:
             system += "\n\n" + glossary_note(hits)
@@ -395,6 +440,7 @@ class VVSearch(Star):
                     event=event,
                     chat_provider_id=self.provider_id,
                     prompt="\n".join(lines) + "\n→",
+                    image_urls=image_urls or [],
                     system_prompt=system,
                     tools=ToolSet(tools=tools),
                     max_steps=5,
@@ -404,6 +450,7 @@ class VVSearch(Star):
         except Exception as err:  # noqa: BLE001 - never break the bot over a failed model call
             logger.warning(f"vv_search: agent failed: {err!r}")
             return False
+        self._count("agent", getattr(resp, "usage", None))
         if sent:
             self._log[gid] = []
             logger.info(f"vv_search agent sent {sent[0]['text']!r} ({sent[0]['source']}, {sent[0]['score']:.2f})")
@@ -682,6 +729,29 @@ class VVSearch(Star):
                 yield event.plain_result(await self._kb_lookup(text))
         event.stop_event()
 
+    @filter.on_llm_response()
+    async def count_chat(self, event: AstrMessageEvent, resp):
+        """The replies of AstrBot's own chat count as model calls too."""
+        self._count("chat", getattr(resp, "usage", None))
+
+    @filter.command("usage")
+    async def usage_cmd(self, event: AstrMessageEvent):
+        """/usage: model calls and tokens of the last days (owner only)."""
+        if self._is_owner(event):
+            try:
+                data = json.loads(self.usage_path.read_text("utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            lines = []
+            for day in sorted(data)[-3:]:
+                for kind, r in data[day].items():
+                    lines.append(
+                        f"{day} {kind}: {r['calls']} 次, 输入 {r['in']}, 输出 {r['out']}"
+                        " (多步调用只统计最后一步)"
+                    )
+            yield event.plain_result("\n".join(lines) or "还没有记录")
+        event.stop_event()
+
     @filter.command("status")
     async def status(self, event: AstrMessageEvent):
         """/status"""
@@ -693,6 +763,9 @@ class VVSearch(Star):
     async def on_group_message(self, event: AstrMessageEvent):
         """Bare numbers after /acc, and picture requests nobody addressed to the bot."""
         text = (event.message_str or "").strip()
+        has_image = any(isinstance(c, Comp.Image) for c in getattr(event.message_obj, "message", None) or [])
+        if has_image and not text and self.vision:
+            text = "[图片]"  # the picture itself goes to the model with this message
         if not text or text.startswith(("/", "／")) or event.get_sender_id() == event.get_self_id():
             return
         if text.isdigit() and len(text) <= 3 and self._who(event) in self._pending:
@@ -707,12 +780,15 @@ class VVSearch(Star):
         if self.mode == "agent" and self.provider_id:
             # AstrBot answers messages addressed to the bot by itself; do not speak twice
             addressed = bool(getattr(event, "is_at_or_wake_command", False))
+            quiet = time.time() - self._last.get(gid, 0) < COOLDOWN_S
+            images = await self._images(event) if (has_image and self.vision and not quiet) else []
             await self._run_agent(
                 event,
                 gid,
                 lines,
                 pictures=not self._reply_capped(gid),
                 text=self.chime_in and not addressed and not self._text_capped(gid),
+                image_urls=images,
             )  # the tools send pictures; a short reply is sent by _run_agent itself
             return
         if self._reply_capped(gid):

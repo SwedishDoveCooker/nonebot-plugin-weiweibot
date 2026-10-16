@@ -1,3 +1,4 @@
+import json
 """Offline checks of the plugin's pure logic (the plugin itself needs AstrBot to import)."""
 
 import asyncio
@@ -22,6 +23,7 @@ ev.filter = types.SimpleNamespace(
     llm_tool=lambda *a, **k: (lambda f: f),
     on_astrbot_loaded=lambda *a, **k: (lambda f: f),
     on_llm_request=lambda *a, **k: (lambda f: f),
+    on_llm_response=lambda *a, **k: (lambda f: f),
     EventMessageType=types.SimpleNamespace(GROUP_MESSAGE=1),
 )
 comp = types.ModuleType("astrbot.api.message_components")
@@ -263,5 +265,20 @@ check("capped after the window limit", chat._text_capped("g"), True)
 chat._texts["g"].clear()
 chat._texts["g"].append(time.time() - mod.TEXT_WINDOW_S - 1)
 check("old replies stop counting", chat._text_capped("g"), False)
+
+
+
+# the usage tally
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+counter = mod.VVSearch.__new__(mod.VVSearch)
+counter.usage_path = Path(tempfile.mkdtemp()) / "usage.json"
+counter._count("agent", types.SimpleNamespace(input_other=1000, input_cached=300, output=40))
+counter._count("agent", types.SimpleNamespace(input_other=100, input_cached=0, output=5))
+counter._count("chat", None)
+saved = json.loads(counter.usage_path.read_text("utf-8"))[time.strftime("%Y-%m-%d")]
+check("agent calls are tallied", saved["agent"], {"calls": 2, "in": 1400, "out": 45})
+check("a call without usage still counts", saved["chat"], {"calls": 1, "in": 0, "out": 0})
 
 sys.exit(1 if bad else 0)
